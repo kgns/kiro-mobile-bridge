@@ -40,13 +40,13 @@ kiro --remote-debugging-port=9000
 Start the bridge server inside the Kiro terminal 
 
 ```bash
-npx kiro-mobile-bridge
+npx github:kgns/kiro-mobile-bridge
 ```
 
 #### Alternative: Clone and Run
 
 ```bash
-git clone 
+git clone https://github.com/kgns/kiro-mobile-bridge.git
 cd kiro-mobile-bridge
 npm install
 npm start
@@ -57,8 +57,8 @@ You'll see output like:
 ```
 Kiro Mobile Bridge
 ─────────────────────
-Local:   http://localhost:3000
-Network: http://192.168.16.106:3000
+Local:   http://localhost:3050
+Network: http://192.168.16.106:3050
 
 🔑 Access Code: 847291
 
@@ -68,19 +68,19 @@ Enter this code on your device to connect.
 ### 4. Open on Your Phone
 
 1. Make sure your phone is on the **same WiFi network** as your computer
-2. Open the **Network URL** (e.g., `http://192.168.1.100:3000`) in your phone's browser
+2. Open the **Network URL** (e.g., `http://192.168.1.100:3050`) in your phone's browser
 3. Enter the **6-digit access code** shown in the terminal
 4. The interface will connect and show your Kiro session
 5. Use the tabs to switch between Chat, Code, and Tasks panels
 
 > **Note:** The access code is single-use — only one device can authenticate per server session. Restart the server to generate a new code.
 
-#### Disable Authentication
+#### Enable Authentication
 
-For trusted environments where you want the original no-auth experience:
+For untrusted environments where you want the pin code auth experience:
 
 ```bash
-npx kiro-mobile-bridge --no-auth
+npx kiro-mobile-bridge --auth
 ```
 
 
@@ -89,7 +89,7 @@ npx kiro-mobile-bridge --no-auth
 ```
 ┌─────────────────┐     CDP      ┌─────────────────┐
 │   Kiro IDE      │◄────────────►│  Bridge Server  │
-│ (port 9000-9003)│              │   (port 3000)   │
+│ (port 9000-9003)│              │   (port 3050)   │
 └─────────────────┘              └────────┬────────┘
                                           │
                                    HTTP + WebSocket
@@ -116,7 +116,7 @@ npx kiro-mobile-bridge --no-auth
 #### Can't connect from phone
 
 - Ensure phone and computer are on the **same network**
-- Check your firewall allows connections on port 3000
+- Check your firewall allows connections on port 3050
 - Try the IP address shown in the server output (not `localhost`)
 
 #### Windows: Works on your computer but not on mobile, even on same WiFi.
@@ -138,24 +138,24 @@ netsh advfirewall firewall set rule name="Node.js JavaScript Runtime" new profil
 
 #### Linux: Firewall blocking connections
 
-If you're on Linux and can't connect from your phone, your firewall may be blocking port 3000. Allow it with:
+If you're on Linux and can't connect from your phone, your firewall may be blocking port 3050. Allow it with:
 
 ```bash
 # UFW (Ubuntu, Arch, etc.)
-sudo ufw allow 3000/tcp
+sudo ufw allow 3050/tcp
 
 # Or with iptables directly
-sudo iptables -A INPUT -p tcp --dport 3000 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 3050 -j ACCEPT
 ```
 
 ## Security Notes
 
 #### OTP Authentication
+- Use `--auth` to enable authentication for untrusted environments
 - A **6-digit access code** is generated on each server startup and displayed in the terminal
 - The code is **single-use** — once a device authenticates, the code is consumed and all other devices are immediately locked out
 - New devices opening the login page during lockout or after the code is consumed will see a locked UI immediately
 - Sessions use **HttpOnly cookies** — tokens are not exposed to client-side JavaScript
-- Use `--no-auth` to disable authentication for fully trusted environments
 
 ## Stability
 
@@ -181,13 +181,13 @@ To run the bridge automatically when your machine starts:
 ```bat
 @echo off
 cd /d E:\Experiements\kiro-mobile-bridge
-npm start --no-auth
+npm start
 ```
 
 **Option 2: Task Scheduler (Hidden)**
 
 ```cmd
-schtasks /create /tn "KiroMobileBridge" /tr "cmd /c cd /d E:\Experiements\kiro-mobile-bridge && npm start -- --no-auth" /sc onlogon /rl highest
+schtasks /create /tn "KiroMobileBridge" /tr "cmd /c cd /d E:\Experiements\kiro-mobile-bridge && npm start --" /sc onlogon /rl highest
 ```
 
 To remove: `schtasks /delete /tn "KiroMobileBridge" /f`

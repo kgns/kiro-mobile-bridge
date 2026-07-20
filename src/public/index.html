@@ -122,6 +122,30 @@
       font-size: 14px;
     }
 
+    /* Window (session) picker for multi-window Kiro */
+    .window-select {
+      flex-shrink: 1;
+      min-width: 0;
+      max-width: 40vw;
+      margin: 0 6px;
+      padding: 5px 8px;
+      background: #2a2a2a;
+      color: #ddd;
+      border: 1px solid #3c3c3c;
+      border-radius: 5px;
+      font-size: 11px;
+      font-family: inherit;
+      cursor: pointer;
+      text-overflow: ellipsis;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    .window-select:focus {
+      outline: none;
+      border-color: #7138cc;
+    }
+
     /* =============================================================================
        Panel Container
        ============================================================================= */
@@ -161,6 +185,111 @@
       overflow-y: auto;
       overflow-x: hidden;
       -webkit-overflow-scrolling: touch;
+      /* Disable the browser's native scroll anchoring. When Kiro inserts the
+         "Working…"/approval panel at the bottom, anchoring would shift scrollTop on
+         its own and fight our explicit pin, producing a visible jump-up-and-back.
+         Our own logic is the single source of truth for scroll position. */
+      overflow-anchor: none;
+    }
+
+    /* Persistent inner layers of the chat scroller. The style host holds the
+       injected <style> blocks and generates no box; the body holds the captured
+       conversation HTML. Keeping them as stable children lets us update styles and
+       content independently, so an unchanged snapshot never forces a full rebuild
+       (which is what caused the frame to flash/jump on every click and update). */
+    #chatStyleHost { display: contents; }
+    #chatBody { display: block; overflow-anchor: none; }
+    #chatBody * { overflow-anchor: none; }
+
+    /* =============================================================================
+       Mobile Composer (dedicated input bar, replaces Kiro's multiline composer)
+       ============================================================================= */
+    .mobile-composer {
+      position: relative;
+      /* Above the controls-sheet backdrop (55) so the gear/input/send stay usable
+         while the sheet is open; the sheet itself (60) sits above this. */
+      z-index: 56;
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      flex-shrink: 0;
+      padding: 6px 8px;
+      padding-bottom: max(6px, env(safe-area-inset-bottom));
+      background: #252526;
+      border-top: 1px solid #3c3c3c;
+    }
+
+    .composer-input {
+      flex: 1;
+      min-width: 0;
+      resize: none;
+      border: 1px solid #3c3c3c;
+      border-radius: 8px;
+      background: #1e1e1e;
+      color: #fff;
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.4;
+      padding: 8px 10px;
+      max-height: 96px;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .composer-input:focus {
+      outline: none;
+      border-color: #7138cc;
+    }
+
+    .composer-input::placeholder {
+      color: #6a6a6a;
+    }
+
+    .composer-btn {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      border: none;
+      border-radius: 8px;
+      background: transparent;
+      color: #bbb;
+      cursor: pointer;
+    }
+
+    .composer-btn:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+    }
+
+    .composer-btn:active {
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    .composer-btn.send {
+      background: #7138cc;
+      color: #fff;
+    }
+
+    .composer-btn.send:hover {
+      background: #7f42dd;
+    }
+
+    .composer-btn.send:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    .composer-btn .codicon {
+      font-size: 18px;
+    }
+
+    /* Composer controls button active state (sheet open) */
+    .composer-btn.active {
+      background: #7138cc;
+      color: #fff;
     }
 
     #chatContent,
@@ -922,6 +1051,7 @@
           <span>Tasks</span>
         </div>
       </div>
+      <select class="window-select" id="windowSelect" title="Select Kiro window" style="display: none;"></select>
       <div class="status">
         <span class="status-dot" id="statusDot"></span>
       </div>
@@ -936,7 +1066,18 @@
           </div>
           <div class="chat-content" id="chatContent" style="display: none;"></div>
         </div>
+        <div class="mobile-composer" id="mobileComposer" style="display: none;">
+          <button class="composer-btn" id="composerMenuBtn" title="Model, agent, effort, autopilot" aria-label="Composer controls" aria-haspopup="true" aria-expanded="false">
+            <span class="codicon codicon-settings-gear"></span>
+          </button>
+          <textarea class="composer-input" id="composerInput" rows="1" placeholder="Message Kiro..." autocomplete="off"></textarea>
+          <button class="composer-btn send" id="composerSendBtn" title="Send" aria-label="Send">
+            <span class="codicon codicon-send"></span>
+          </button>
+        </div>
       </div>
+
+
 
       <!-- Editor Panel -->
       <div class="panel" id="editorPanel">
@@ -1023,7 +1164,12 @@
     let isTypingInKiroInput = false, activePanel = 'chat';
     let lastSuccessfulSnapshot = null, navigationPending = false;
     let workspaceFiles = [], fileTreeOpen = false, expandedFolders = new Set();
-    let updateDebounceTimer = null, isRendering = false;
+    let updateDebounceTimer = null, isRendering = false, forceScrollBottom = false;
+    let lastChatContentHash = '', lastChatStyleString = '';
+    // "Follow mode": while the user is at/near the bottom, keep the view glued to
+    // the bottom as content grows (streaming text, code highlighting, images).
+    // Turns off the moment the user scrolls up, so they are never yanked down.
+    let chatFollowMode = true, chatBodyResizeObserver = null;
     let tasksData = [], selectedTaskIndex = -1, tasksPollingTimer = null, lastTasksHash = '';
     let searchMatches = [], currentMatchIndex = -1;
 
@@ -1033,6 +1179,11 @@
     const $ = id => document.getElementById(id);
     const statusDot = $('statusDot');
     const navTabs = $('navTabs');
+    const windowSelect = $('windowSelect');
+    const mobileComposer = $('mobileComposer');
+    const composerInput = $('composerInput');
+    const composerSendBtn = $('composerSendBtn');
+    const composerMenuBtn = $('composerMenuBtn');
     const toast = $('toast');
     const fileTreeDropdown = $('fileTreeDropdown');
     const fileTree = $('fileTree');
@@ -1261,8 +1412,123 @@
       Object.keys(panels).forEach(key => panels[key].panel.classList.toggle('active', key === tab.dataset.panel));
       activePanel = tab.dataset.panel;
 
+      // Returning to the chat panel should land at the bottom
+      if (activePanel === 'chat') forceScrollBottom = true;
+
       if (selectedCascadeId) fetchPanelContent(activePanel, selectedCascadeId);
     });
+
+    // Switch the controlled Kiro window
+    if (windowSelect) {
+      windowSelect.addEventListener('change', (e) => {
+        const id = e.target.value;
+        if (id && id !== selectedCascadeId) {
+          showLoading('chat', 'Switching window...');
+          selectCascade(id);
+        }
+      });
+    }
+
+    // =============================================================================
+    // Mobile Composer (dedicated input, independent of Kiro's rendered composer)
+    // =============================================================================
+    function autoGrowComposer() {
+      if (!composerInput) return;
+      composerInput.style.height = 'auto';
+      composerInput.style.height = Math.min(composerInput.scrollHeight, 96) + 'px';
+    }
+
+    async function submitComposer() {
+      if (!composerInput) return;
+      const text = composerInput.value.trim();
+      if (!text) return;
+      if (!selectedCascadeId) { showToast('No Kiro window selected', 1500); return; }
+
+      // Empty the box the moment send is pressed so the UI feels responsive and
+      // never depends on the CDP round-trip completing. Restore the text if the
+      // send fails and the user hasn't already started typing something new.
+      const previousValue = composerInput.value;
+      composerInput.value = '';
+      autoGrowComposer();
+
+      const sent = await sendToKiro(text);
+      if (!sent && composerInput.value === '') {
+        composerInput.value = previousValue;
+        autoGrowComposer();
+        showToast('Message not sent — tap send to retry', 2500);
+      }
+    }
+
+    if (composerInput) {
+      composerInput.addEventListener('input', autoGrowComposer);
+      composerInput.addEventListener('keydown', (e) => {
+        // Enter sends; Shift+Enter inserts a newline
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          submitComposer();
+        }
+      });
+    }
+    if (composerSendBtn) composerSendBtn.addEventListener('click', submitComposer);
+
+    // =============================================================================
+    // Kiro Controls Sheet (single button -> vertical popup)
+    // Rather than reconstructing controls, this reveals Kiro's OWN composer
+    // toolbar (model / effort / agent selectors, autopilot toggle, context usage
+    // meter, attach) straight from the snapshot, restyled into a vertical bottom
+    // sheet. Taps forward to the real Kiro elements via the chat click handler, so
+    // every model/agent/effort option and the live state always match Kiro exactly.
+    // =============================================================================
+    let controlsOpen = false;
+
+    // Pin the sheet directly above the mobile composer regardless of its height.
+    function updateSheetOffset() {
+      const h = mobileComposer ? mobileComposer.offsetHeight : 52;
+      panels.chat.content.style.setProperty('--kiro-sheet-bottom', h + 'px');
+    }
+
+    function openControls() {
+      if (!selectedCascadeId) { showToast('No Kiro window selected', 1500); return; }
+      controlsOpen = true;
+      updateSheetOffset();
+      panels.chat.content.classList.add('controls-open');
+      if (composerMenuBtn) { composerMenuBtn.classList.add('active'); composerMenuBtn.setAttribute('aria-expanded', 'true'); }
+      // Pull a fresh snapshot so the revealed toolbar shows current state.
+      fetchChatSnapshot(selectedCascadeId);
+    }
+
+    function closeControls() {
+      controlsOpen = false;
+      panels.chat.content.classList.remove('controls-open');
+      if (composerMenuBtn) { composerMenuBtn.classList.remove('active'); composerMenuBtn.setAttribute('aria-expanded', 'false'); }
+    }
+
+    function toggleControls() {
+      if (controlsOpen) closeControls();
+      else openControls();
+    }
+
+    if (composerMenuBtn) {
+      composerMenuBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleControls();
+      });
+    }
+
+    // Tap outside the sheet to close it. Capture phase on #chatContent so it beats
+    // the chat's own click forwarding; ignored for taps inside the sheet itself.
+    // (No full-screen backdrop element: on iOS it renders above the fixed sheet and
+    // would swallow every tap.)
+    if (panels.chat.content) {
+      panels.chat.content.addEventListener('click', (e) => {
+        if (!controlsOpen) return;
+        const t = e.target;
+        if (t && t.closest && t.closest('.session-view-input-row')) return; // inside the sheet
+        e.preventDefault();
+        e.stopPropagation();
+        closeControls();
+      }, true);
+    }
 
     // =============================================================================
     // WebSocket Connection
@@ -1288,7 +1554,12 @@
     function handleMessage(data) {
       if (data.type === 'cascade_list') {
         cascades = data.cascades || [];
+        // If the selected window disappeared, fall back to the first available
+        if (selectedCascadeId && !cascades.some(c => c.id === selectedCascadeId)) {
+          selectedCascadeId = null;
+        }
         if (!selectedCascadeId && cascades.length > 0) selectCascade(cascades[0].id);
+        renderWindowSelect();
       } else if (data.type === 'snapshot_update' && data.cascadeId === selectedCascadeId) {
         const panel = data.panel || 'chat';
         if (!isTypingInKiroInput && panel === activePanel && !isRendering) {
@@ -1304,12 +1575,36 @@
       workspaceFiles = [];
       lastTasksHash = '';
       stopTasksPolling();
+      // A fresh window selection should always land at the bottom of the chat,
+      // regardless of whether the first render arrives via the styles fetch or a
+      // racing WebSocket update.
+      forceScrollBottom = true;
+      if (windowSelect && cascadeId) windowSelect.value = cascadeId;
+      if (mobileComposer) mobileComposer.style.display = cascadeId ? 'flex' : 'none';
 
       if (cascadeId) {
         fetchStyles(cascadeId).then(() => fetchPanelContent(activePanel, cascadeId));
       } else {
         showLoading('chat', 'Waiting for Kiro...');
       }
+    }
+
+    // Populate the multi-window picker. Only shown when more than one window exists.
+    function renderWindowSelect() {
+      if (!windowSelect) return;
+
+      if (cascades.length <= 1) {
+        windowSelect.style.display = 'none';
+        windowSelect.innerHTML = '';
+        return;
+      }
+
+      windowSelect.innerHTML = cascades.map((c, i) => {
+        const label = (c.title || c.window || ('Window ' + (i + 1))).trim();
+        return `<option value="${c.id}">${escapeHtml(label)}</option>`;
+      }).join('');
+      windowSelect.value = selectedCascadeId || cascades[0].id;
+      windowSelect.style.display = '';
     }
 
     // =============================================================================
@@ -1332,6 +1627,9 @@
 
     async function fetchChatSnapshot(cascadeId, isUpdate = false) {
       try {
+        // Never render chat without Kiro's CSS, or buttons/controls render unstyled
+        // (white). A WebSocket update can otherwise race ahead of the styles fetch.
+        if (!currentStyles) await fetchStyles(cascadeId);
         const r = await fetch(`/snapshot/${cascadeId}`);
         if (!r.ok) {
           if (navigationPending) { setTimeout(() => fetchChatSnapshot(cascadeId, isUpdate), 200); return; }
@@ -2055,6 +2353,202 @@
            SCOPED TO #chatContent ONLY - do not affect Tasks/Editor panels
            ============================================================================= */
 
+        /* Hide ONLY Kiro's text composer row (the mobile client has its own).
+           Do NOT hide the whole .session-view-input: its sibling
+           .agent-interaction-panel hosts the "Working..." status, Cancel/Stop, and
+           approval/permission prompts, which must stay visible. Injection/submit run
+           against Kiro's real webview, so hiding the snapshot copy is safe. */
+        #chatContent .session-view-input-row {
+          display: none !important;
+        }
+
+        /* Strip the input region's own chrome (it was framing the now-hidden
+           composer) so it collapses to nothing when idle, while still letting the
+           status/approval panel render when present. */
+        #chatContent .session-view-input {
+          padding: 0 !important;
+          border-top: none !important;
+          background: transparent !important;
+        }
+
+        /* =============================================================================
+           KIRO CONTROLS SHEET
+           When #chatContent has .controls-open, reveal Kiro's real composer toolbar
+           (model / effort / agent selectors, autopilot toggle, context meter, attach)
+           as a vertical bottom sheet pinned above the mobile composer. The text
+           editor row stays hidden (the mobile client has its own input). Taps forward
+           to the real Kiro controls via the chat click handler.
+           ============================================================================= */
+        /* While the sheet is open, stop #chatContent from being a scroll
+           container. On iOS, -webkit-overflow-scrolling:touch makes it a stacking
+           context AND the containing block for position:fixed descendants, which
+           traps the sheet inside it (rendered below page-level elements and
+           mispositioned). Neutralizing overflow here lets the fixed sheet escape
+           to the viewport and layer above everything, like it does on desktop. */
+        #chatContent.controls-open {
+          overflow: hidden !important;
+          -webkit-overflow-scrolling: auto !important;
+        }
+
+        #chatContent.controls-open .session-view-input-row {
+          display: block !important;
+          position: fixed !important;
+          left: 0 !important;
+          right: 0 !important;
+          bottom: var(--kiro-sheet-bottom, 52px) !important;
+          z-index: 60 !important;
+          max-height: 65vh !important;
+          overflow-y: auto !important;
+          -webkit-overflow-scrolling: touch !important;
+          background: #252526 !important;
+          border-top: 1px solid #3c3c3c !important;
+          box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.45) !important;
+          padding: 10px !important;
+          margin: 0 !important;
+        }
+
+        /* The mobile client owns the text input, so hide Kiro's editor row + its
+           hidden file input; keep only the control toolbar. */
+        #chatContent.controls-open .chat-input-top-row,
+        #chatContent.controls-open .chat-input-file-picker {
+          display: none !important;
+        }
+
+        /* Let the wrapper collapse to a plain full-width block. */
+        #chatContent.controls-open .drop-zone,
+        #chatContent.controls-open .chat-input-wrapper {
+          display: block !important;
+          width: 100% !important;
+          padding: 0 !important;
+          margin: 0 !important;
+          background: transparent !important;
+          border: none !important;
+          box-shadow: none !important;
+        }
+
+        /* Stack the toolbar and its left/right groups vertically. */
+        #chatContent.controls-open .chat-input-bottom-row,
+        #chatContent.controls-open .chat-input-bottom-row-left,
+        #chatContent.controls-open .chat-input-bottom-row-right {
+          display: flex !important;
+          flex-direction: column !important;
+          align-items: stretch !important;
+          gap: 6px !important;
+          width: 100% !important;
+          margin: 0 !important;
+        }
+
+        /* Each control becomes a full-width row with a comfortable touch target. */
+        #chatContent.controls-open .chat-input-bottom-row button,
+        #chatContent.controls-open .chat-input-bottom-row .kiro-toggle-switch {
+          display: flex !important;
+          align-items: center !important;
+          justify-content: flex-start !important;
+          gap: 10px !important;
+          width: 100% !important;
+          min-height: 46px !important;
+          padding: 10px 12px !important;
+          border-radius: 8px !important;
+          background: #2d2d30 !important;
+          border: 1px solid #3c3c3c !important;
+          color: #fff !important;
+          font-size: 14px !important;
+          text-align: left !important;
+        }
+
+        #chatContent.controls-open .chat-input-bottom-row button:hover,
+        #chatContent.controls-open .chat-input-bottom-row button:active {
+          background: #37373a !important;
+        }
+
+        /* Autopilot toggle row: label on the left, switch pushed to the right.
+           The toggle is dimmed + pointer-events:none elsewhere (it was disabled on
+           mobile); re-enable it inside the sheet so it can be tapped. */
+        #chatContent.controls-open .kiro-toggle-switch {
+          justify-content: space-between !important;
+          opacity: 1 !important;
+          pointer-events: auto !important;
+          cursor: pointer !important;
+        }
+        #chatContent.controls-open .kiro-toggle-switch *,
+        #chatContent.controls-open .kiro-toggle-switch > input[type="checkbox"] {
+          pointer-events: auto !important;
+        }
+        #chatContent.controls-open .kiro-toggle-switch label {
+          flex: 1 !important;
+          cursor: pointer !important;
+        }
+
+        /* Context usage meter: give it room, and surface the real percentage that
+           Kiro exposes on the meter's aria-label (e.g. "35% context used"). */
+        #chatContent.controls-open .context-usage-indicator-wrapper,
+        #chatContent.controls-open .context-usage-indicator {
+          display: flex !important;
+          align-items: center !important;
+          gap: 10px !important;
+          width: 100% !important;
+          min-height: 40px !important;
+          padding: 0 !important;
+        }
+        #chatContent.controls-open .context-usage-indicator-wrapper {
+          padding: 6px 12px !important;
+        }
+        #chatContent.controls-open .context-usage-indicator[aria-label]::after {
+          content: attr(aria-label) !important;
+          color: #bbb !important;
+          font-size: 13px !important;
+          white-space: nowrap !important;
+        }
+
+        /* Open dropdown (model/effort/agent) renders inline in Kiro; neutralize its
+           absolute positioning so it lists vertically full-width inside the sheet. */
+        #chatContent.controls-open .chat-input-popup-menu {
+          position: static !important;
+          transform: none !important;
+          left: auto !important;
+          top: auto !important;
+          width: 100% !important;
+          max-width: none !important;
+          max-height: none !important;
+          margin: 4px 0 !important;
+          box-shadow: none !important;
+          border: 1px solid #3c3c3c !important;
+          background: #1e1e1e !important;
+        }
+        #chatContent.controls-open .chat-input-popup-option {
+          display: flex !important;
+          width: 100% !important;
+          min-height: 44px !important;
+          padding: 10px 12px !important;
+        }
+
+        /* Flatten Kiro's fixed-height chat layout so it fills #chatContent exactly.
+           Kiro's roots use height:100vh (they assume they own the full viewport),
+           which breaks scrolling inside our smaller container. Neutralizing the
+           fixed heights and inner overflow makes #chatContent the single scroller. */
+        #chatContent body,
+        #chatContent .session-manager-root,
+        #chatContent .session-manager-content,
+        #chatContent .session-view-root,
+        #chatContent .session-view-container,
+        #chatContent .session-view-content {
+          height: auto !important;
+          min-height: 0 !important;
+          max-height: none !important;
+          overflow: visible !important;
+          flex: 0 0 auto !important;
+        }
+
+        /* Freeze the session tab bar at the top of the chat scroll area (just under
+           the app's top bar) instead of letting it scroll away with the messages.
+           Works because the flatten above makes #chatContent the single scroller. */
+        #chatContent .session-manager-header {
+          position: sticky !important;
+          top: 0 !important;
+          z-index: 15 !important;
+          background-color: var(--vscode-editorGroupHeader-tabsBackground, #252526) !important;
+        }
+
         /* Render designated non-clickable options as plain text */
         #chatContent [data-kiro-plain-text="true"] {
           pointer-events: none !important;
@@ -2282,6 +2776,89 @@
       </style>`;
     }
 
+    // Cheap, stable string hash (djb2) used to detect whether a chat snapshot's
+    // HTML actually changed before spending a DOM rebuild on it.
+    function simpleHash(str) {
+      let h = 5381;
+      for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+      return h + ':' + str.length;
+    }
+
+    // -------------------------------------------------------------------------
+    // DOM morphing
+    //
+    // The chat snapshot is the entire Kiro chat body serialized to HTML. Assigning
+    // it via innerHTML tears down and rebuilds the whole conversation on every
+    // update, which repaints all visible messages at once (the "jump" on new
+    // messages) and resets the scroll. Instead we reconcile the live DOM against
+    // the incoming HTML in place: nodes that didn't change are left untouched, so
+    // the browser never repaints them and scroll position is preserved. Only the
+    // genuinely new/changed nodes are created. This is a positional morph (no
+    // keys), which suits an append-mostly conversation.
+    // -------------------------------------------------------------------------
+    function morphAttributes(fromEl, toEl) {
+      const fromAttrs = fromEl.attributes;
+      for (let i = fromAttrs.length - 1; i >= 0; i--) {
+        const name = fromAttrs[i].name;
+        if (!toEl.hasAttribute(name)) fromEl.removeAttribute(name);
+      }
+      const toAttrs = toEl.attributes;
+      for (let i = 0; i < toAttrs.length; i++) {
+        const { name, value } = toAttrs[i];
+        if (fromEl.getAttribute(name) !== value) fromEl.setAttribute(name, value);
+      }
+    }
+
+    function morphNode(fromNode, toNode) {
+      const type = fromNode.nodeType;
+      if (type === Node.TEXT_NODE || type === Node.COMMENT_NODE) {
+        if (fromNode.nodeValue !== toNode.nodeValue) fromNode.nodeValue = toNode.nodeValue;
+        return;
+      }
+      if (type === Node.ELEMENT_NODE) {
+        morphAttributes(fromNode, toNode);
+        morphChildren(fromNode, toNode);
+      }
+    }
+
+    function morphChildren(fromEl, toEl) {
+      let fromChild = fromEl.firstChild;
+      let toChild = toEl.firstChild;
+      while (toChild) {
+        const nextTo = toChild.nextSibling;
+        if (!fromChild) {
+          // No live node left at this position: import the new one and append.
+          fromEl.appendChild(document.importNode(toChild, true));
+          toChild = nextTo;
+          continue;
+        }
+        const nextFrom = fromChild.nextSibling;
+        if (fromChild.nodeType === toChild.nodeType && fromChild.nodeName === toChild.nodeName) {
+          morphNode(fromChild, toChild);
+        } else {
+          fromEl.replaceChild(document.importNode(toChild, true), fromChild);
+        }
+        fromChild = nextFrom;
+        toChild = nextTo;
+      }
+      // Drop any live nodes the new HTML no longer has.
+      while (fromChild) {
+        const nextFrom = fromChild.nextSibling;
+        fromEl.removeChild(fromChild);
+        fromChild = nextFrom;
+      }
+    }
+
+    // Reconcile #chatBody's children against a freshly captured body HTML string.
+    // The snapshot is a serialized <body>; DOMParser rebuilds it off-document (no
+    // layout/paint), and we morph its children into the live body layer. Body-level
+    // attributes are intentionally not copied (matching the prior innerHTML path,
+    // which dropped the <body> wrapper).
+    function morphChatBody(liveEl, newHtml) {
+      const parsed = new DOMParser().parseFromString(newHtml, 'text/html');
+      morphChildren(liveEl, parsed.body);
+    }
+
     function renderChatSnapshot(snapshot, isUpdate = false) {
       if (isRendering) return;
       isRendering = true;
@@ -2295,65 +2872,138 @@
       }, 2000);
 
       try {
-        let innerScrollable = panels.chat.content.querySelector('.overflow-y-auto, [class*="scroll"]');
-        const hadContent = innerScrollable && innerScrollable.scrollHeight > 100;
-        const scrollTop = innerScrollable ? innerScrollable.scrollTop : 0;
-        const scrollHeight = innerScrollable ? innerScrollable.scrollHeight : 0;
-        const clientHeight = innerScrollable ? innerScrollable.clientHeight : 0;
-        const wasAtBottom = !hadContent || (scrollHeight - scrollTop - clientHeight < 100);
+        // After the layout flatten (see getPostOverrideStyles), #chatContent is the
+        // single scroll container for the conversation. Measure its position before
+        // touching content so we can preserve or re-pin it afterwards.
+        const scrollerEl = panels.chat.content;
 
-        let html = getBaseStyles();
-        if (currentStyles) html += `<style>${currentStyles}</style>`;
-        // CRITICAL: Add post-override styles AFTER Kiro's CSS to force fixed theme
-        html += getPostOverrideStyles();
-        html += snapshot.html || '';
+        // Two persistent layers inside the scroller: styles and body. Create them
+        // once. Rebuilding the whole scroller on every event tore down the DOM and
+        // re-parsed all of Kiro's CSS, which is what made the frame flash/jump.
+        let styleHost = document.getElementById('chatStyleHost');
+        let bodyHost = document.getElementById('chatBody');
+        const firstBuild = !styleHost || !bodyHost;
+        if (firstBuild) {
+          scrollerEl.innerHTML = '<div id="chatStyleHost"></div><div id="chatBody"></div>';
+          styleHost = document.getElementById('chatStyleHost');
+          bodyHost = document.getElementById('chatBody');
+          lastChatStyleString = '';
+          lastChatContentHash = '';
 
-        panels.chat.content.innerHTML = html;
-        panels.chat.container.style.background = '#1e1e1e'; // Force fixed background, ignore snapshot.bodyBg
+          // Track whether the user is following the bottom. Any scroll (user or
+          // programmatic) recomputes it; programmatic pins land at the bottom so
+          // they keep follow mode on, while scrolling up turns it off.
+          scrollerEl.addEventListener('scroll', () => {
+            chatFollowMode = (scrollerEl.scrollHeight - scrollerEl.scrollTop - scrollerEl.clientHeight) < 120;
+          }, { passive: true });
+
+          // Re-pin to the bottom whenever the conversation's height changes while in
+          // follow mode. This is what absorbs post-render growth (streaming tokens,
+          // syntax highlighting, late-loading fonts/images) without a visible jump.
+          if (typeof ResizeObserver !== 'undefined') {
+            chatBodyResizeObserver = new ResizeObserver(() => {
+              if (chatFollowMode) scrollerEl.scrollTop = scrollerEl.scrollHeight;
+            });
+            chatBodyResizeObserver.observe(bodyHost);
+          }
+        }
+
+        // Compose the style string separately from content. It rarely changes, so
+        // it is only re-injected when it actually differs (no CSSOM churn per event).
+        let styleStr = getBaseStyles();
+        if (currentStyles) styleStr += `<style>${currentStyles}</style>`;
+        // CRITICAL: post-override styles come AFTER Kiro's CSS to force fixed theme.
+        styleStr += getPostOverrideStyles();
+
+        const contentHtml = snapshot.html || '';
+        const contentHash = simpleHash(contentHtml);
+        const contentChanged = contentHash !== lastChatContentHash;
+
+        const prevScrollTop = scrollerEl.scrollTop;
+        const hadContent = scrollerEl.scrollHeight > 100;
+        const wasAtBottom = !hadContent || (scrollerEl.scrollHeight - prevScrollTop - scrollerEl.clientHeight < 120);
+
+        if (styleStr !== lastChatStyleString) {
+          styleHost.innerHTML = styleStr;
+          lastChatStyleString = styleStr;
+        }
+
+        // Nothing new to show and no forced re-pin: leave the DOM (and scroll
+        // position) exactly as-is. This is what stops the jump when the user clicks
+        // around or an update arrives that doesn't change the conversation.
+        if (!contentChanged && !firstBuild && !forceScrollBottom) {
+          clearTimeout(safetyTimeout);
+          isRendering = false;
+          return;
+        }
+
+        if (contentChanged || firstBuild) {
+          // First fill has nothing to preserve, so a direct assignment is cheapest.
+          // Subsequent updates morph in place so unchanged messages are never torn
+          // down (no full-frame repaint / "jump") and scroll position is kept.
+          if (!bodyHost.firstChild) {
+            bodyHost.innerHTML = contentHtml;
+          } else {
+            morphChatBody(bodyHost, contentHtml);
+          }
+          lastChatContentHash = contentHash;
+          panels.chat.container.style.background = '#1e1e1e'; // Force fixed background, ignore snapshot.bodyBg
+
+          // Run all synchronous DOM mutations BEFORE positioning the scroll, so the
+          // final layout is known and we can scroll in the same frame (no visible jump).
+          removePlaceholderText();
+          fixContextWindowCircles();
+          hideRevertButton();
+          makeInteractive();
+        }
         hideLoading('chat');
 
-        removePlaceholderText();
-        fixContextWindowCircles();
-        hideRevertButton();
+        // Decide scroll intent. History/session lists start at the top; everything
+        // else follows the conversation: pin to bottom when the view was just
+        // opened/switched, on a fresh render, or when the user was already at the
+        // bottom. Otherwise preserve the previous position.
+        const hasHistoryClass = panels.chat.content.querySelector('[class*="history"], [class*="History"], [class*="session-list"], [class*="SessionList"], [class*="conversation-list"], [class*="ConversationList"]');
+        const pinToBottom = !hasHistoryClass && (forceScrollBottom || !isUpdate || wasAtBottom);
 
-        requestAnimationFrame(() => {
+        // Sync follow mode to this render's intent so the ResizeObserver keeps (or
+        // stops) gluing the view to the bottom as content settles afterwards.
+        chatFollowMode = pinToBottom;
+
+        const applyScroll = () => {
+          const el = panels.chat.content;
+          if (hasHistoryClass) {
+            const hist = el.querySelector('[class*="history"], [class*="History"], [class*="session-list"], [class*="SessionList"]');
+            if (hist && hist.scrollHeight > hist.clientHeight) hist.scrollTop = 0;
+            el.scrollTop = 0;
+            return;
+          }
+          if (pinToBottom) {
+            el.scrollTop = el.scrollHeight;
+          } else if (hadContent) {
+            el.scrollTop = prevScrollTop;
+          }
+        };
+
+        // CRITICAL: apply synchronously (before the browser paints) so the content
+        // never flashes to the top and snaps back on each update.
+        applyScroll();
+        forceScrollBottom = false;
+        clearTimeout(safetyTimeout);
+        isRendering = false;
+
+        // Gently correct for late-settling layout (images, syntax highlighting) only
+        // when we're pinning. A single rAF pass runs before the next paint, so it
+        // does not produce a visible yank; guarded so a user who scrolled up in the
+        // meantime is not pulled back down, and a no-op when the height is stable.
+        if (pinToBottom || hasHistoryClass) {
           requestAnimationFrame(() => {
             try {
-              // Only detect history panel by class names - NOT by date patterns
-              // Date patterns are too aggressive and match regular chat timestamps
-              const hasHistoryClass = panels.chat.content.querySelector('[class*="history"], [class*="History"], [class*="session-list"], [class*="SessionList"], [class*="conversation-list"], [class*="ConversationList"]');
-
-              panels.chat.content.querySelectorAll('.overflow-y-auto, [class*="scroll"]').forEach(el => {
-                const isHistoryContainer = el.matches('[class*="history"], [class*="History"], [class*="session-list"], [class*="SessionList"]') ||
-                  el.closest('[class*="history"], [class*="History"], [class*="session-list"], [class*="SessionList"]');
-
-                if (el.scrollHeight > el.clientHeight + 10) {
-                  if (isHistoryContainer) {
-                    el.scrollTop = 0;
-                  } else if (!isUpdate || wasAtBottom) {
-                    el.scrollTop = el.scrollHeight;
-                  } else if (hadContent) {
-                    el.scrollTop = scrollTop;
-                  }
-                }
-              });
-
-              // Only scroll main content to top if it's clearly a history panel
-              if (hasHistoryClass) {
-                panels.chat.content.scrollTop = 0;
-              } else if (!isUpdate || wasAtBottom) {
-                panels.chat.content.scrollTop = panels.chat.content.scrollHeight;
-              }
-            } catch (e) {
-              console.error('[Render] Scroll error:', e);
-            } finally {
-              clearTimeout(safetyTimeout);
-              isRendering = false;
-            }
+              const el = panels.chat.content;
+              if (hasHistoryClass) { el.scrollTop = 0; return; }
+              if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) el.scrollTop = el.scrollHeight;
+            } catch (e) {}
           });
-        });
-
-        makeInteractive();
+        }
       } catch (e) {
         console.error('[Render] Error:', e);
         clearTimeout(safetyTimeout);
@@ -2883,6 +3533,51 @@
     function makeInteractive() {
       const content = panels.chat.content;
 
+      // -----------------------------------------------------------------------
+      // Composer controls: a single CAPTURE-phase listener on the persistent
+      // #chatContent. Capture runs before any element's own onclick, so it wins
+      // over the per-element handlers that Kiro's option rows pick up (their
+      // children match model-selector selectors and stopPropagation, which is why
+      // taps on an option did nothing). Attached once; #chatContent is never
+      // rebuilt by the snapshot morph, so this survives every render.
+      // -----------------------------------------------------------------------
+      if (!content._composerCaptureAttached) {
+        content._composerCaptureAttached = true;
+        const refresh = () => {
+          setTimeout(() => fetchChatSnapshot(selectedCascadeId), 200);
+          setTimeout(() => fetchChatSnapshot(selectedCascadeId), 550);
+        };
+        content.addEventListener('click', (e) => {
+          const t = e.target;
+          if (!t || !t.closest) return;
+
+          const opt = t.closest('.chat-input-popup-option');
+          if (opt) {
+            e.preventDefault(); e.stopPropagation();
+            sendClickToKiro({ isListboxOption: true, text: (opt.textContent || '').trim() });
+            refresh();
+            return;
+          }
+          const trig = t.closest('.model-selector-trigger, .effort-selector-trigger, .kiro-agent-selector-trigger');
+          if (trig) {
+            e.preventDefault(); e.stopPropagation();
+            const sel = trig.classList.contains('model-selector-trigger') ? '.model-selector-trigger'
+              : trig.classList.contains('effort-selector-trigger') ? '.effort-selector-trigger'
+                : '.kiro-agent-selector-trigger';
+            sendClickToKiro({ isComposerControl: true, controlSelector: sel, exactClick: true });
+            refresh();
+            return;
+          }
+          const tog = t.closest('.kiro-toggle-switch');
+          if (tog) {
+            e.preventDefault(); e.stopPropagation();
+            sendClickToKiro({ isComposerControl: true, controlSelector: '.kiro-toggle-switch input[role="switch"]', exactClick: true });
+            refresh();
+            return;
+          }
+        }, true);
+      }
+
       // Make specific task-option cards plain text (non-clickable)
       const nonClickablePhrases = [
         'keep optional tasks',
@@ -2933,6 +3628,51 @@
           e.preventDefault();
           e.stopPropagation();
           handleAttachmentClick(); // Call synchronously to ensure user activation context
+          return;
+        }
+
+        // ===================================================================
+        // KIRO COMPOSER CONTROLS (revealed by the controls sheet)
+        // Route the model/effort/agent triggers, the autopilot toggle, and the
+        // dropdown options to their exact Kiro elements. These are matched by a
+        // precise selector/text so selection is reliable across all models
+        // (including ones we don't hardcode) and the autopilot input actually
+        // toggles (clicking the wrapper div does not).
+        // ===================================================================
+        const kiroRefresh = () => {
+          setTimeout(() => fetchChatSnapshot(selectedCascadeId), 200);
+          setTimeout(() => fetchChatSnapshot(selectedCascadeId), 550);
+        };
+
+        const popupOption = target.closest('.chat-input-popup-option, .chat-input-popup-menu [role="option"], .chat-input-popup-menu [role="menuitem"]');
+        if (popupOption && content.contains(popupOption)) {
+          e.preventDefault();
+          e.stopPropagation();
+          sendClickToKiro({ isListboxOption: true, text: (popupOption.textContent || '').trim() });
+          kiroRefresh();
+          return;
+        }
+
+        const controlTrigger = target.closest('.model-selector-trigger, .effort-selector-trigger, .kiro-agent-selector-trigger');
+        if (controlTrigger && content.contains(controlTrigger)) {
+          e.preventDefault();
+          e.stopPropagation();
+          const sel = controlTrigger.classList.contains('model-selector-trigger') ? '.model-selector-trigger'
+            : controlTrigger.classList.contains('effort-selector-trigger') ? '.effort-selector-trigger'
+              : '.kiro-agent-selector-trigger';
+          sendClickToKiro({ isComposerControl: true, controlSelector: sel, exactClick: true });
+          kiroRefresh();
+          return;
+        }
+
+        const autopilotToggle = target.closest('.kiro-toggle-switch');
+        if (autopilotToggle && content.contains(autopilotToggle)) {
+          e.preventDefault();
+          e.stopPropagation();
+          // The clickable element is the checkbox input, not the wrapper div;
+          // exactClick prevents redirecting to the wrapper (which won't toggle).
+          sendClickToKiro({ isComposerControl: true, controlSelector: '.kiro-toggle-switch input[role="switch"]', exactClick: true });
+          kiroRefresh();
           return;
         }
 
@@ -3332,25 +4072,18 @@
         if (btn.querySelector('.codicon-arrow-up, .codicon-send')) attachSendHandler(btn);
       });
 
-      // Toggle switches - send click to Kiro and let snapshot refresh show actual state
+      // Toggle switches (e.g. Autopilot): forward a click to the real checkbox
+      // input by selector. Clicking the wrapper/label doesn't reliably toggle it,
+      // and the generic path redirected to a non-toggling ancestor, so target the
+      // input directly with exactClick. Snapshot refresh then shows the real state.
       content.querySelectorAll('[role="switch"], input[type="checkbox"][role="switch"]').forEach(toggle => {
         const wrapper = toggle.closest('.kiro-toggle-switch') || toggle;
         wrapper.style.cursor = 'pointer';
         wrapper.onclick = async (e) => {
           e.preventDefault(); e.stopPropagation();
-          const label = wrapper.querySelector('label');
-          const toggleLabel = label ? label.textContent.trim() : 'toggle';
-
-          console.log('[Toggle] Clicked:', toggleLabel);
-
-          // Send click to Kiro - don't try to predict the new state
-          // Just let the snapshot refresh show the actual state from Kiro
-          await sendClickToKiro({ tag: 'div', text: toggleLabel, role: 'switch', isToggle: true });
-
-          // Refresh snapshot after toggle to get actual Kiro state
-          // Use 250ms delay to allow Kiro to process the toggle
-          setTimeout(() => fetchChatSnapshot(selectedCascadeId), 250);
-
+          await sendClickToKiro({ isComposerControl: true, controlSelector: '.kiro-toggle-switch input[role="switch"]', exactClick: true });
+          setTimeout(() => fetchChatSnapshot(selectedCascadeId), 200);
+          setTimeout(() => fetchChatSnapshot(selectedCascadeId), 550);
           return false;
         };
       });
@@ -3804,6 +4537,47 @@
         };
       });
 
+      // -----------------------------------------------------------------------
+      // Kiro composer controls (model / effort / agent selectors, autopilot,
+      // dropdown options). Attach precise handlers FIRST so the heuristic loops
+      // below skip them (they bail on `el.onclick`). Forwarding by exact Kiro
+      // selector/text is reliable for every model/agent/effort option and
+      // actually toggles autopilot (the generic path redirected the click to a
+      // wrapper that doesn't toggle).
+      // -----------------------------------------------------------------------
+      const kiroControlsRefresh = () => {
+        setTimeout(() => fetchChatSnapshot(selectedCascadeId), 200);
+        setTimeout(() => fetchChatSnapshot(selectedCascadeId), 550);
+      };
+
+      [['.model-selector-trigger'], ['.effort-selector-trigger'], ['.kiro-agent-selector-trigger']].forEach(([controlSelector]) => {
+        content.querySelectorAll(controlSelector).forEach(el => {
+          if (el.onclick) return;
+          el.style.cursor = 'pointer';
+          el.onclick = async (e) => {
+            e.preventDefault(); e.stopPropagation();
+            await sendClickToKiro({ isComposerControl: true, controlSelector, exactClick: true });
+            kiroControlsRefresh();
+            return false;
+          };
+        });
+      });
+
+      // (The autopilot / toggle switch is handled by the dedicated [role="switch"]
+      // handler below, which targets the checkbox input directly.)
+
+      // Dropdown options for the model/effort/agent popups: select by exact text.
+      content.querySelectorAll('.chat-input-popup-option').forEach(el => {
+        if (el.onclick) return;
+        el.style.cursor = 'pointer';
+        el.onclick = async (e) => {
+          e.preventDefault(); e.stopPropagation();
+          await sendClickToKiro({ isListboxOption: true, text: (el.textContent || '').trim() });
+          kiroControlsRefresh();
+          return false;
+        };
+      });
+
       // Model selector buttons and dropdown options
       const modelNames = ['claude', 'sonnet', 'opus', 'haiku', 'auto', 'gpt', 'model', 'gemini', 'llama'];
       const modelSelectorSelectors = [
@@ -3819,6 +4593,12 @@
         try {
           content.querySelectorAll(sel).forEach(el => {
             if (el.onclick) return;
+            // Skip anything inside the composer's popup menu. Option rows contain
+            // children like `.model-selector-option-header` that match
+            // [class*="model-selector"]; giving them an isModelSelector handler
+            // would shadow the option's precise isListboxOption handler (the child
+            // stops propagation), so selecting a model would do nothing.
+            if (el.closest('.chat-input-popup-menu, .chat-input-popup-option')) return;
             el.style.cursor = 'pointer';
             el.onclick = async (e) => {
               e.preventDefault(); e.stopPropagation();
@@ -3941,6 +4721,9 @@
       allClickables.forEach(el => {
         if (el.matches && el.matches('[contenteditable], textarea, input:not([type="checkbox"])')) return;
         if (el.closest('[role="tab"]') || el.closest('.kiro-toggle-switch') || el.onclick) return;
+        // Composer popup options are handled precisely above; don't let a child
+        // button/role element here shadow the option's isListboxOption handler.
+        if (el.closest('.chat-input-popup-menu')) return;
         // Skip attachment button - handled by global click handler's interception logic
         const elAria = (el.getAttribute('aria-label') || '').toLowerCase();
         if (/(attach|paper\s*clip|upload|add\s*file|file\s*upload)/i.test(elAria)) return;
@@ -4079,7 +4862,7 @@
     let pendingMessage = false;
 
     async function sendToKiro(message) {
-      if (!message || !selectedCascadeId) return;
+      if (!message || !selectedCascadeId) return false;
 
       // Rate limiting check
       const now = Date.now();
@@ -4087,12 +4870,12 @@
         if (!pendingMessage) {
           showToast('Please wait before sending another message', 1500);
         }
-        return;
+        return false;
       }
 
       if (pendingMessage) {
         showToast('Message already being sent', 1500);
-        return;
+        return false;
       }
 
       pendingMessage = true;
@@ -4113,9 +4896,12 @@
           setTimeout(() => fetchChatSnapshot(selectedCascadeId), 300);
           setTimeout(() => fetchChatSnapshot(selectedCascadeId), 600);
           setTimeout(() => fetchChatSnapshot(selectedCascadeId), 1000);
+          return true;
         }
+        return false;
       } catch (e) {
         // Silently fail
+        return false;
       } finally {
         pendingMessage = false;
       }

@@ -59,17 +59,36 @@ const __dirname = dirname(__filename);
 // =============================================================================
 
 const PORT = process.env.PORT || 3050;
-const NO_AUTH = true;
+const AUTH = process.argv.includes('--auth');
 
-// Auth permanently disabled
-setAuthEnabled(false);
+// Configure authentication
+setAuthEnabled(AUTH);
+if (AUTH) {
+  generateOTP();
+}
 
 // =============================================================================
 // State Management
 // =============================================================================
 
-const cascades = new Map(); // cascadeId -> { id, cdp, metadata, snapshot, css, snapshotHash, editor, editorHash }
-const mainWindowCDP = { connection: null, id: null };
+const cascades = new Map(); // cascadeId -> { id, cdp, metadata, snapshot, css, snapshotHash, editor, editorHash, windowId, windowTitle }
+const mainWindows = new Map(); // windowId (page target id) -> { cdp, wsUrl, title }
+
+/**
+ * Clean a raw window title for display.
+ * Kiro window titles look like "<file> - <workspace> [WSL: host] - Kiro".
+ * Strip the trailing " - Kiro" and any "[WSL: ...]"/"[SSH: ...]" remote tag.
+ * @param {string} raw
+ * @returns {string}
+ */
+function cleanWindowTitle(raw) {
+  if (!raw) return '';
+  return raw
+    .replace(/\s*-\s*Kiro\s*$/i, '')
+    .replace(/\s*\[(WSL|SSH|Dev Container|Codespaces)[^\]]*\]\s*/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
 
 const pollingState = {
   lastCascadeCount: 0,
@@ -93,6 +112,7 @@ async function discoverTargets() {
   _discoveryRunning = true;
   try {
   const foundCascadeIds = new Set();
+  const foundWindowIds = new Set();
   let foundMainWindow = false;
   let stateChanged = false;
 
@@ -105,40 +125,50 @@ async function discoverTargets() {
     const { port, targets } = result.value;
 
     try {
-      // Find main VS Code window
-      const mainWindowTarget = targets.find(target => {
+      // Map all main Kiro/VS Code windows on this port by their target id.
+      // Each chat webview references its window via target.parentId.
+      const windowsById = new Map();
+      for (const target of targets) {
         const url = (target.url || '').toLowerCase();
-        return target.type === 'page' &&
+        if (target.type === 'page' &&
           (url.startsWith('vscode-file://') || url.includes('workbench')) &&
-          target.webSocketDebuggerUrl;
-      });
-
-      if (mainWindowTarget && !mainWindowCDP.connection) {
-        console.log(`[Discovery] Found main VS Code window: ${mainWindowTarget.title}`);
-        try {
-          const cdp = await connectToCDP(mainWindowTarget.webSocketDebuggerUrl);
-          mainWindowCDP.connection = cdp;
-          mainWindowCDP.id = generateId(mainWindowTarget.webSocketDebuggerUrl);
-          foundMainWindow = true;
-          stateChanged = true;
-
-          cdp.ws.on('close', () => {
-            console.log(`[Discovery] Main window disconnected`);
-            mainWindowCDP.connection = null;
-            mainWindowCDP.id = null;
-            adjustDiscoveryInterval(true);
-          });
-        } catch (err) {
-          console.error(`[Discovery] Failed to connect to main window: ${err.message}`);
+          target.webSocketDebuggerUrl) {
+          windowsById.set(target.id, target);
         }
-      } else if (mainWindowTarget) {
-        foundMainWindow = true;
       }
 
-      // Find Kiro Agent webviews
+      // Ensure a CDP connection to each main window (used for per-window editor/workspace).
+      for (const [windowId, windowTarget] of windowsById) {
+        foundMainWindow = true;
+        foundWindowIds.add(windowId);
+        const title = cleanWindowTitle(windowTarget.title);
+
+        if (!mainWindows.has(windowId)) {
+          console.log(`[Discovery] Found main window: ${title}`);
+          try {
+            const cdp = await connectToCDP(windowTarget.webSocketDebuggerUrl);
+            mainWindows.set(windowId, { cdp, wsUrl: windowTarget.webSocketDebuggerUrl, title });
+            stateChanged = true;
+
+            cdp.ws.on('close', () => {
+              console.log(`[Discovery] Main window disconnected: ${title}`);
+              mainWindows.delete(windowId);
+              adjustDiscoveryInterval(true);
+            });
+          } catch (err) {
+            console.error(`[Discovery] Failed to connect to main window: ${err.message}`);
+          }
+        } else {
+          mainWindows.get(windowId).title = title;
+        }
+      }
+
+      // Find Kiro Agent webviews (chat), one per window.
+      // Exclude service workers / workers that share the vscode-webview URL scheme.
       const kiroAgentTargets = targets.filter(target => {
         const url = (target.url || '').toLowerCase();
         if (!target.webSocketDebuggerUrl) return false;
+        if (target.type === 'service_worker' || target.type === 'worker' || target.type === 'shared_worker') return false;
         return url.includes('kiroagent') ||
           url.includes('vscode-webview') ||
           (url.startsWith('https://127.0.0.1:') && url.includes('/c/'));
@@ -148,6 +178,9 @@ async function discoverTargets() {
         const wsUrl = target.webSocketDebuggerUrl;
         const cascadeId = generateId(wsUrl);
         foundCascadeIds.add(cascadeId);
+        const windowTitle = windowsById.get(target.parentId)?.title
+          ? cleanWindowTitle(windowsById.get(target.parentId).title)
+          : '';
 
         if (!cascades.has(cascadeId)) {
           stateChanged = true;
@@ -158,7 +191,9 @@ async function discoverTargets() {
             cascades.set(cascadeId, {
               id: cascadeId,
               cdp,
-              metadata: { windowTitle: target.title || 'Unknown', chatTitle: '', isActive: true },
+              windowId: target.parentId || null,
+              windowTitle,
+              metadata: { windowTitle: windowTitle || target.title || 'Unknown', chatTitle: '', isActive: true },
               snapshot: null,
               css: null,
               snapshotHash: null,
@@ -178,12 +213,27 @@ async function discoverTargets() {
             console.error(`[Discovery] Failed to connect to ${cascadeId}: ${err.message}`);
           }
         } else {
-          cascades.get(cascadeId).metadata.windowTitle = target.title || cascades.get(cascadeId).metadata.windowTitle;
+          const existing = cascades.get(cascadeId);
+          if (target.parentId) existing.windowId = target.parentId;
+          if (windowTitle) {
+            existing.windowTitle = windowTitle;
+            existing.metadata.windowTitle = windowTitle;
+          }
         }
       }
     } catch (err) {
       // Log port scanning errors for debugging
       console.debug(`[Discovery] Error scanning port ${port}: ${err.message}`);
+    }
+  }
+
+  // Clean up main windows that are no longer present
+  for (const [windowId, entry] of mainWindows) {
+    if (!foundWindowIds.has(windowId)) {
+      console.log(`[Discovery] Main window no longer available: ${entry.title}`);
+      stateChanged = true;
+      try { entry.cdp.close(); } catch (e) { /* already closed */ }
+      mainWindows.delete(windowId);
     }
   }
 
@@ -254,9 +304,10 @@ async function pollSnapshots() {
         }
       }
 
-      // Capture editor from main window
+      // Capture editor from this cascade's own window (falls back to any window)
       // Store rootContextId locally to avoid race conditions during async operations
-      const mainCDP = mainWindowCDP.connection;
+      const mainCDP = (cascade.windowId && mainWindows.get(cascade.windowId)?.cdp)
+        || (mainWindows.size > 0 ? [...mainWindows.values()][0].cdp : null);
       const contextId = mainCDP?.rootContextId;
       if (mainCDP && contextId) {
         const editor = await captureEditor(mainCDP);
@@ -346,16 +397,22 @@ function broadcastSnapshotUpdate(cascadeId, panel = 'chat') {
   }
 }
 
+function serializeCascades() {
+  return Array.from(cascades.values()).map(c => {
+    const windowTitle = c.windowTitle || c.metadata?.windowTitle || '';
+    return {
+      id: c.id,
+      // Prefer the human-readable window title so multiple windows are distinguishable
+      title: windowTitle || c.metadata?.chatTitle || 'Kiro',
+      window: windowTitle || 'Unknown',
+      active: c.metadata?.isActive || false
+    };
+  });
+}
+
 function broadcastCascadeList() {
   if (!wss) return;
-  const cascadeList = Array.from(cascades.values()).map(c => ({
-    id: c.id,
-    title: c.metadata?.chatTitle || c.metadata?.windowTitle || 'Unknown',
-    window: c.metadata?.windowTitle || 'Unknown',
-    active: c.metadata?.isActive || false
-  }));
-
-  const message = JSON.stringify({ type: 'cascade_list', cascades: cascadeList });
+  const message = JSON.stringify({ type: 'cascade_list', cascades: serializeCascades() });
   for (const client of wss.clients) {
     try { if (client.readyState === WebSocket.OPEN) client.send(message); } catch (e) {}
   }
@@ -424,7 +481,7 @@ app.use(authMiddleware);
 app.use(express.static(join(__dirname, 'public')));
 
 // Mount API routes
-app.use('/', createApiRouter(cascades, mainWindowCDP));
+app.use('/', createApiRouter(cascades, mainWindows));
 
 // Global error handler - prevents unhandled route errors from crashing the server
 app.use((err, req, res, next) => {
@@ -458,14 +515,7 @@ wss.on('connection', (ws, req) => {
   ws.on('pong', () => { ws.isAlive = true; });
 
   // Send cascade list on connect
-  const cascadeList = Array.from(cascades.values()).map(c => ({
-    id: c.id,
-    title: c.metadata?.chatTitle || c.metadata?.windowTitle || 'Unknown',
-    window: c.metadata?.windowTitle || 'Unknown',
-    active: c.metadata?.isActive || false
-  }));
-
-  try { ws.send(JSON.stringify({ type: 'cascade_list', cascades: cascadeList })); } catch (e) {}
+  try { ws.send(JSON.stringify({ type: 'cascade_list', cascades: serializeCascades() })); } catch (e) {}
 
   ws.on('close', () => console.log(`[WebSocket] Client disconnected from ${clientIP}`));
   ws.on('error', (err) => console.error(`[WebSocket] Error from ${clientIP}:`, err.message));
@@ -490,7 +540,13 @@ httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`Local:   http://localhost:${PORT}`);
   console.log(`Network: http://${localIP}:${PORT}`);
   console.log('');
-  console.log('Open the Network URL on your phone.');
+  if (isAuthEnabled()) {
+    console.log(`\x1b[33m\x1b[1m🔑 Access Code: ${getOTP()}\x1b[0m`);
+    console.log('');
+    console.log('Enter this code on your device to connect.');
+  } else {
+    console.log('Auth disabled (--no-auth). Open the Network URL on your phone.');
+  }
   console.log('');
 
   // Start discovery and polling

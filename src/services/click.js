@@ -184,6 +184,43 @@ function buildClickScript(clickInfo) {
     }
     
     // =========================================================================
+    // Composer Control by selector (model / effort / agent trigger, autopilot
+    // toggle). The mobile client sends the exact Kiro selector so we don't have
+    // to guess by text — reliable for any model, and it hits the autopilot
+    // checkbox input directly (clicking the wrapper div does not toggle it).
+    // =========================================================================
+    if (info.isComposerControl && info.controlSelector && !element) {
+      try {
+        const el = targetDoc.querySelector(info.controlSelector);
+        if (el && isVisible(el)) { element = el; matchMethod = 'composer-control'; }
+      } catch (e) {}
+    }
+    
+    // =========================================================================
+    // Popup/Listbox Option by text (model / effort / agent dropdown items).
+    // Matches an option inside the currently open Kiro popup by its text, so it
+    // works for every option without any hardcoded model list.
+    // =========================================================================
+    if (info.isListboxOption && !element) {
+      const search = (info.text || '').trim();
+      const menus = targetDoc.querySelectorAll('.chat-input-popup-menu, [role="listbox"], [role="menu"]');
+      for (const menu of menus) {
+        if (!isVisible(menu)) continue;
+        const opts = menu.querySelectorAll('.chat-input-popup-option, [role="option"], [role="menuitem"]');
+        for (const o of opts) {
+          if (!isVisible(o)) continue;
+          const tx = (o.textContent || '').trim();
+          if (tx === search || (search.length > 8 && (tx.startsWith(search.substring(0, 20)) || search.startsWith(tx.substring(0, 20))))) {
+            element = o;
+            matchMethod = 'listbox-option';
+            break;
+          }
+        }
+        if (element) break;
+      }
+    }
+    
+    // =========================================================================
     // Model Selector Button Click
     // =========================================================================
     if (isModelSelector && !element) {
@@ -1208,8 +1245,14 @@ function buildClickScript(clickInfo) {
     let clickTarget = element;
     let reactClickableFound = false;
     
-    // First check if current element has React onClick
-    if (hasReactOnClick(element)) {
+    // exactClick: click the resolved element itself and skip the ancestor/child
+    // React-handler search. Required for precise selector targets like the
+    // autopilot checkbox input, whose onClick lives on a wrapper that does NOT
+    // toggle when clicked — redirecting to it silently breaks the toggle.
+    if (info.exactClick) {
+      console.log('[Click] exactClick: using resolved element directly');
+    } else if (hasReactOnClick(element)) {
+      // First check if current element has React onClick
       console.log('[Click] Current element has React onClick');
       reactClickableFound = true;
     } else {
@@ -1232,7 +1275,7 @@ function buildClickScript(clickInfo) {
       }
     }
     
-    if (!reactClickableFound) {
+    if (!reactClickableFound && !info.exactClick) {
       console.log('[Click] WARNING: No React onClick found on element or ancestors/children');
     }
     

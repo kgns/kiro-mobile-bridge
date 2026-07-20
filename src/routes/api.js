@@ -41,11 +41,24 @@ async function ensureUploadDir() {
 /**
  * Create API router
  * @param {Map} cascades - Cascade connections map
- * @param {object} mainWindowCDP - Main window CDP connection
+ * @param {Map} mainWindows - Map of windowId -> { cdp, wsUrl, title }
  * @returns {Router} - Express router
  */
-export function createApiRouter(cascades, mainWindowCDP) {
+export function createApiRouter(cascades, mainWindows) {
   const router = Router();
+
+  /**
+   * Resolve the CDP connection for the window that owns a cascade.
+   * Falls back to any connected window so single-window setups keep working.
+   * @param {object} cascade
+   * @returns {object|null} CDP connection
+   */
+  function resolveWindowCdp(cascade) {
+    if (cascade?.windowId && mainWindows.get(cascade.windowId)?.cdp) {
+      return mainWindows.get(cascade.windowId).cdp;
+    }
+    return mainWindows.size > 0 ? [...mainWindows.values()][0].cdp : null;
+  }
 
   // POST /log - Client debug logging
   router.post('/log', (req, res) => {
@@ -646,7 +659,7 @@ export function createApiRouter(cascades, mainWindowCDP) {
 
     try {
       // Get workspace root
-      const workspaceRoot = await getWorkspaceRoot(mainWindowCDP) || process.cwd();
+      const workspaceRoot = await getWorkspaceRoot(resolveWindowCdp(cascade)) || process.cwd();
       console.log(`[ReadFile] Workspace root: ${workspaceRoot}`);
 
       // SECURITY: Validate path is within workspace root
@@ -757,7 +770,7 @@ export function createApiRouter(cascades, mainWindowCDP) {
     if (!cascade) return res.status(404).json({ error: 'Cascade not found' });
 
     try {
-      const workspaceRoot = await getWorkspaceRoot(mainWindowCDP) || process.cwd();
+      const workspaceRoot = await getWorkspaceRoot(resolveWindowCdp(cascade)) || process.cwd();
       const files = await collectWorkspaceFiles(workspaceRoot);
 
       console.log(`[Files] Found ${files.length} files in ${workspaceRoot}`);
@@ -774,7 +787,7 @@ export function createApiRouter(cascades, mainWindowCDP) {
     if (!cascade) return res.status(404).json({ error: 'Cascade not found' });
 
     try {
-      const workspaceRoot = await getWorkspaceRoot(mainWindowCDP) || process.cwd();
+      const workspaceRoot = await getWorkspaceRoot(resolveWindowCdp(cascade)) || process.cwd();
       const kiroSpecsPath = path.join(workspaceRoot, '.kiro', 'specs');
 
       try {
@@ -1023,16 +1036,16 @@ export function createApiRouter(cascades, mainWindowCDP) {
 /**
  * Get workspace root from VS Code window title
  * Uses environment-based paths instead of hardcoded values
- * @param {object} mainWindowCDP - Main window CDP connection
+ * @param {object} windowCdp - CDP connection for the target window
  * @returns {Promise<string|null>}
  */
-async function getWorkspaceRoot(mainWindowCDP) {
-  if (!mainWindowCDP.connection?.rootContextId) return null;
+async function getWorkspaceRoot(windowCdp) {
+  if (!windowCdp?.rootContextId) return null;
 
   try {
-    const result = await mainWindowCDP.connection.call('Runtime.evaluate', {
+    const result = await windowCdp.call('Runtime.evaluate', {
       expression: 'document.title',
-      contextId: mainWindowCDP.connection.rootContextId,
+      contextId: windowCdp.rootContextId,
       returnByValue: true
     });
 

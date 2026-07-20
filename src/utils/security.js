@@ -99,7 +99,8 @@ export function sanitizeClickInfo(clickInfo) {
     { name: 'filePath', maxLength: 500 },
     { name: 'toggleId', maxLength: 100 },
     { name: 'actionType', maxLength: 50 },
-    { name: 'parentMessageContext', maxLength: 150 }
+    { name: 'parentMessageContext', maxLength: 150 },
+    { name: 'controlSelector', maxLength: 120 }
   ];
 
   for (const { name, maxLength } of stringProps) {
@@ -112,12 +113,20 @@ export function sanitizeClickInfo(clickInfo) {
     }
   }
 
+  // controlSelector is passed to document.querySelector on Kiro's page. It's
+  // JSON-encoded into the eval script (so no code injection), but constrain it
+  // to a conservative CSS-selector charset as defense in depth.
+  if (sanitized.controlSelector !== undefined) {
+    sanitized.controlSelector = sanitized.controlSelector.replace(/[^A-Za-z0-9 .#_\-\[\]="':>*(),]/g, '');
+  }
+
   // Boolean properties
   const boolProps = [
     'isTab', 'isCloseButton', 'isToggle', 'isModelSelector', 'isModelOption',
     'isSendButton', 'isFileLink', 'isNotificationButton', 'isIconButton', 'isHistoryItem',
     'isDialogChoice', 'isToolActionButton', 'isCommandPanelAction', 'isCommandTrustOption',
-    'isMessageActionButton', 'isAttachment'
+    'isMessageActionButton', 'isAttachment',
+    'isComposerControl', 'isListboxOption', 'exactClick'
   ];
 
   for (const name of boolProps) {
