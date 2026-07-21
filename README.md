@@ -73,7 +73,7 @@ Enter this code on your device to connect.
 4. The interface will connect and show your Kiro session
 5. Use the tabs to switch between Chat, Code, and Tasks panels
 
-> **Note:** The access code is single-use — only one device can authenticate per server session. Restart the server to generate a new code.
+> **Note:** The access code stays valid until you restart the server. You can enter it again to reconnect (for example after your phone's browser closes) and from more than one device. Restart the server to rotate the code and end all sessions.
 
 #### Enable Authentication
 
@@ -153,9 +153,10 @@ sudo iptables -A INPUT -p tcp --dport 3050 -j ACCEPT
 #### OTP Authentication
 - Use `--auth` to enable authentication for untrusted environments
 - A **6-digit access code** is generated on each server startup and displayed in the terminal
-- The code is **single-use** — once a device authenticates, the code is consumed and all other devices are immediately locked out
-- New devices opening the login page during lockout or after the code is consumed will see a locked UI immediately
+- The code stays valid until the server restarts — you can enter it again to reconnect (e.g. after your phone's browser is closed and reopened) and from more than one device
+- Failed attempts are **rate limited** — after 5 wrong codes, the login page locks for 60 seconds
 - Sessions use **HttpOnly cookies** — tokens are not exposed to client-side JavaScript
+- Restart the server whenever you want to invalidate the current code and all active sessions
 
 ## Stability
 

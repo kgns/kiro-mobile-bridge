@@ -470,7 +470,6 @@ app.get('/auth/status', (req, res) => {
     authenticated: token ? validateSession(token) : false,
     authEnabled: isAuthEnabled(),
     locked: rateLimit.locked,
-    consumed: rateLimit.consumed,
     retryAfter: rateLimit.retryAfter
   });
 });

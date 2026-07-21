@@ -1,9 +1,10 @@
 /**
  * OTP Authentication Middleware
- * Generates a single-use 6-digit OTP on server startup.
- * After successful verification, issues an HttpOnly session cookie.
- * Single-device only — no regeneration until server restart.
- * 
+ * Generates a 6-digit OTP on server startup that stays valid until the server restarts.
+ * The code can be verified any number of times, so a device can reconnect
+ * (for example after the mobile browser is closed and reopened) by entering it again.
+ * Each successful verification issues an HttpOnly session cookie.
+ *
  * NOTE: crypto.randomInt is used for OTP generation (cryptographically secure).
  * crypto.randomBytes is used for session tokens (cryptographically secure).
  */
@@ -14,10 +15,9 @@ import { OTP_MAX_ATTEMPTS, OTP_LOCKOUT_MS } from '../utils/constants.js';
 // State
 // =============================================================================
 
-/** @type {{ otp: string, consumed: boolean, sessionToken: string|null }} */
+/** @type {{ otp: string, sessionToken: string|null }} */
 const authState = {
   otp: '',
-  consumed: false,
   sessionToken: null
 };
 
@@ -43,7 +43,6 @@ export function generateOTP() {
   // crypto.randomInt generates a cryptographically secure random integer
   const code = crypto.randomInt(100000, 999999 + 1);
   authState.otp = String(code);
-  authState.consumed = false;
   authState.sessionToken = null;
   rateLimitState.attempts = 0;
   rateLimitState.lockedUntil = 0;
@@ -76,9 +75,9 @@ export function isAuthEnabled() {
 
 /**
  * Verify OTP code
- * Returns session token on success, null on failure.
- * OTP is single-use — once consumed, further attempts are rejected.
- * 
+ * Returns a session token on success. The code stays valid for the life of the
+ * server, so it can be verified repeatedly to reconnect from the same or a new device.
+ *
  * @param {string} code - The 6-digit OTP to verify
  * @returns {{ success: boolean, token?: string, error?: string, retryAfter?: number }}
  */
@@ -99,26 +98,6 @@ export function verifyOTP(code) {
   if (rateLimitState.lockedUntil > 0 && rateLimitState.lockedUntil <= now) {
     rateLimitState.attempts = 0;
     rateLimitState.lockedUntil = 0;
-  }
-
-  // OTP already consumed — no new sessions allowed
-  // Still enforce rate limiting to prevent brute-force probing
-  if (authState.consumed) {
-    rateLimitState.attempts++;
-    if (rateLimitState.attempts >= OTP_MAX_ATTEMPTS) {
-      rateLimitState.lockedUntil = now + OTP_LOCKOUT_MS;
-      return {
-        success: false,
-        consumed: true,
-        error: `Too many attempts. Try again in ${OTP_LOCKOUT_MS / 1000}s.`,
-        retryAfter: OTP_LOCKOUT_MS / 1000
-      };
-    }
-    return {
-      success: false,
-      consumed: true,
-      error: 'Access code already used. Restart the server for a new code.'
-    };
   }
 
   // Validate input format
@@ -154,8 +133,8 @@ export function verifyOTP(code) {
     };
   }
 
-  // Success — mark consumed, generate session token
-  authState.consumed = true;
+  // Success — issue a fresh session token. The code stays valid so the same or
+  // another device can reconnect later by entering it again.
   authState.sessionToken = crypto.randomBytes(32).toString('hex');
   rateLimitState.attempts = 0;
 
@@ -169,9 +148,9 @@ export function verifyOTP(code) {
 export function getRateLimitStatus() {
   const now = Date.now();
   if (rateLimitState.lockedUntil > now) {
-    return { locked: true, consumed: authState.consumed, retryAfter: Math.ceil((rateLimitState.lockedUntil - now) / 1000) };
+    return { locked: true, retryAfter: Math.ceil((rateLimitState.lockedUntil - now) / 1000) };
   }
-  return { locked: false, consumed: authState.consumed, retryAfter: 0 };
+  return { locked: false, retryAfter: 0 };
 }
 
 /**
@@ -364,11 +343,7 @@ export function getLoginPageHTML() {
       try {
         const res = await fetch('/auth/status');
         const data = await res.json();
-        if (data.consumed) {
-          // OTP already used by another device
-          showError('Access code already used. Restart the server for a new code.');
-          inputs.forEach(i => { i.disabled = true; });
-        } else if (data.locked && data.retryAfter > 0) {
+        if (data.locked && data.retryAfter > 0) {
           startLockoutCountdown(data.retryAfter);
         } else {
           inputs[0].focus();
@@ -489,11 +464,6 @@ export function getLoginPageHTML() {
           showSuccess();
           // Redirect to main app after brief success indication
           setTimeout(() => { window.location.href = '/'; }, 600);
-        } else if (data.consumed) {
-          // OTP already used by another device — permanently lock
-          showError(data.error || 'Access code already used. Restart the server for a new code.');
-          inputs.forEach(i => { i.disabled = true; i.value = ''; });
-          if (data.retryAfter) startLockoutCountdown(data.retryAfter);
         } else if (data.retryAfter) {
           // Rate limited — start countdown
           startLockoutCountdown(data.retryAfter);

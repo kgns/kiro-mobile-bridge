@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-07-21
+
+- change: make the OTP access code reusable for the life of the server
+  - Removed the single-use restriction, so a device can reconnect by entering the code again after its browser is closed and reopened.
+  - The code can now authenticate more than one device; rate limiting on failed attempts is unchanged.
+  - Restarting the server still rotates the code and invalidates existing sessions.
+
 ## 2026-02-15
 
 - feat: enhance OTP authentication with rate limiting and lockout mechanism
