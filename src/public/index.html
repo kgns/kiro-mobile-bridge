@@ -3772,6 +3772,26 @@
             className: typeof className === 'string' ? className.substring(0, 200) : ''
           };
 
+          // Positional reference stamped by the snapshot. This identifies the exact
+          // element that was tapped, so the server doesn't have to rediscover it
+          // from text - text is unstable (collapsing a block rewrites it) and the
+          // text search matched containers as readily as the target itself.
+          // The fingerprint lets the server reject a stale ref if Kiro's DOM moved
+          // on between the snapshot and the tap.
+          const refEl = clickableEl.closest('[data-kr]');
+          if (refEl) {
+            const refIndex = parseInt(refEl.getAttribute('data-kr'), 10);
+            if (!isNaN(refIndex)) {
+              clickInfo.refIndex = refIndex;
+              clickInfo.refTag = refEl.tagName.toLowerCase();
+              // getAttribute rather than className: on SVG elements className is an
+              // SVGAnimatedString, and icons are common click targets. data-kr is
+              // excluded so the fingerprint stays comparable to Kiro's own DOM.
+              clickInfo.refClass = (refEl.getAttribute('class') || '').substring(0, 200);
+              clickInfo.refText = (refEl.textContent || '').replace(/\s+/g, ' ').trim().substring(0, 60);
+            }
+          }
+
           // Add specific flags based on element characteristics
           if (role === 'tab') clickInfo.isTab = true;
           if (role === 'switch' || className.includes('toggle')) clickInfo.isToggle = true;

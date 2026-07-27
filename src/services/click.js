@@ -80,6 +80,54 @@ function buildClickScript(clickInfo) {
       return null;
     };
     
+    // =========================================================================
+    // Positional Reference (preferred)
+    // The snapshot stamps every element with data-kr in document order, so the
+    // ref the mobile client sends back identifies the exact element that was
+    // tapped. Walking this DOM in the same order reproduces that numbering.
+    // Verified against a fingerprint first: if Kiro's DOM changed between the
+    // snapshot and the tap the indices have shifted, and we fall through to the
+    // text-based matchers below rather than click whatever now sits at that spot.
+    // =========================================================================
+    if (typeof info.refIndex === 'number' && info.refIndex >= 0) {
+      try {
+        const walker = targetDoc.createTreeWalker(targetDoc.body, NodeFilter.SHOW_ELEMENT);
+        let i = 0;
+        let candidate = walker.nextNode();
+        while (candidate && i < info.refIndex) {
+          i++;
+          candidate = walker.nextNode();
+        }
+        // offsetParent is null for position:fixed elements (popups, dialogs), so
+        // fall back to a non-zero box rather than rejecting a valid target.
+        const refVisible = (el) => {
+          if (isVisible(el)) return true;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        };
+        if (candidate && i === info.refIndex && refVisible(candidate)) {
+          const tagOk = !info.refTag || candidate.tagName.toLowerCase() === info.refTag;
+          // getAttribute rather than className: on SVG elements className is an
+          // SVGAnimatedString, and icons are common click targets.
+          const cls = (candidate.getAttribute('class') || '').substring(0, 200);
+          const classOk = !!info.refClass && cls === info.refClass;
+          const text = (candidate.textContent || '').replace(/\\s+/g, ' ').trim().substring(0, 60);
+          const textOk = !!info.refText && text === info.refText;
+          // An unclassed, textless element (a bare icon wrapper) has nothing to
+          // fingerprint; accept it when the snapshot saw the same emptiness.
+          const bothBlank = !info.refClass && !info.refText && !cls && !text;
+          // Position alone is not enough - require the element to still look like
+          // the one that was tapped.
+          if (tagOk && (classOk || textOk || bothBlank)) {
+            element = candidate;
+            matchMethod = 'ref-' + info.refIndex;
+          } else {
+            console.log('[Click] Stale ref ' + info.refIndex + ' (tag=' + tagOk + ' class=' + classOk + ' text=' + textOk + '), falling back to text match');
+          }
+        }
+      } catch (e) {}
+    }
+    
     // Determine element type
     const isTabClick = info.isTab || info.role === 'tab';
     const isCloseButton = info.isCloseButton || (info.ariaLabel && info.ariaLabel.toLowerCase() === 'close');
@@ -858,9 +906,10 @@ function buildClickScript(clickInfo) {
             element = matchingElements[targetIndex];
             matchMethod = 'aria-label-indexed-' + targetIndex + '-of-' + matchingElements.length;
           } else {
-            // Index out of bounds, fall back to last element
-            element = matchingElements[matchingElements.length - 1];
-            matchMethod = 'aria-label-indexed-fallback';
+            // Index out of bounds means this DOM no longer matches the snapshot the
+            // index came from. Picking another element here is a guess that clicks
+            // something the user never tapped, so leave it unresolved.
+            console.log('[Click] aria-label index ' + targetIndex + ' out of range (' + matchingElements.length + ' matches), not guessing');
           }
         } else if (matchingElements.length > 0) {
           element = matchingElements[0];
@@ -966,9 +1015,10 @@ function buildClickScript(clickInfo) {
           element = matchingElements[targetIndex];
           matchMethod = 'text-content-indexed-' + targetIndex + '-of-' + matchingElements.length;
         } else {
-          // Index out of bounds, fall back to last element
-          element = matchingElements[matchingElements.length - 1];
-          matchMethod = 'text-content-indexed-fallback';
+          // Index out of bounds means this DOM no longer matches the snapshot the
+          // index came from. Picking another element here is a guess that clicks
+          // something the user never tapped, so leave it unresolved.
+          console.log('[Click] text index ' + targetIndex + ' out of range (' + matchingElements.length + ' matches), not guessing');
         }
       } else if (matchingElements.length > 0) {
         // No index provided or only one match, use first match (now sorted by clickability)
@@ -1223,7 +1273,15 @@ function buildClickScript(clickInfo) {
         let node;
         while (node = walker.nextNode()) {
           const nodeText = (node.textContent || '').trim().toLowerCase();
-          if (nodeText.includes(searchTextLower) || searchTextLower.includes(nodeText.substring(0, 20))) {
+          // Whitespace-only text nodes are everywhere, and an empty string is a
+          // substring of anything - without this guard the reverse test below is
+          // true for every search string, so a total miss ends up clicking the
+          // first container in the conversation.
+          if (nodeText.length < 4) continue;
+          const containsSearch = searchTextLower.length >= 3 && nodeText.includes(searchTextLower);
+          const isPartOfSearch = searchTextLower.length > nodeText.length &&
+            searchTextLower.includes(nodeText.substring(0, 20));
+          if (containsSearch || isPartOfSearch) {
             const parent = node.parentElement;
             if (parent && isVisible(parent)) {
               element = parent;

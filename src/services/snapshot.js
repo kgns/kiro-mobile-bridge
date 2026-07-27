@@ -163,6 +163,20 @@ export async function captureSnapshot(cdp) {
     
     const clone = targetBody.cloneNode(true);
     
+    // Stamp a positional reference on every cloned element. The mobile client sends
+    // the ref of whatever the user tapped, and the click service resolves it by
+    // walking this same DOM in the same order, which gives an exact target instead
+    // of re-guessing one from truncated text. Only the clone is stamped; Kiro's
+    // live DOM is never modified. Must run before the portal/floating clones are
+    // appended below so those copies stay unstamped rather than carrying duplicates.
+    const refWalker = targetDoc.createTreeWalker(clone, NodeFilter.SHOW_ELEMENT);
+    let refCount = 0;
+    let refNode = refWalker.nextNode();
+    while (refNode) {
+      refNode.setAttribute('data-kr', String(refCount++));
+      refNode = refWalker.nextNode();
+    }
+    
     // CRITICAL: Sync checkbox checked PROPERTY to ATTRIBUTE before serialization
     // cloneNode doesn't copy JS properties, only HTML attributes
     // So we need to explicitly set the checked attribute based on the property

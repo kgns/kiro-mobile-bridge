@@ -100,7 +100,10 @@ export function sanitizeClickInfo(clickInfo) {
     { name: 'toggleId', maxLength: 100 },
     { name: 'actionType', maxLength: 50 },
     { name: 'parentMessageContext', maxLength: 150 },
-    { name: 'controlSelector', maxLength: 120 }
+    { name: 'controlSelector', maxLength: 120 },
+    { name: 'refTag', maxLength: 50 },
+    { name: 'refClass', maxLength: 200 },
+    { name: 'refText', maxLength: 60 }
   ];
 
   for (const { name, maxLength } of stringProps) {
@@ -136,12 +139,18 @@ export function sanitizeClickInfo(clickInfo) {
   }
 
   // Number properties (for element indexing)
-  const numberProps = ['elementIndex', 'totalMatches'];
+  const numberProps = [
+    { name: 'elementIndex', max: 1000 },
+    { name: 'totalMatches', max: 1000 },
+    // refIndex is a position within Kiro's whole chat DOM, which runs to tens of
+    // thousands of elements in a long conversation.
+    { name: 'refIndex', max: 500000 }
+  ];
 
-  for (const name of numberProps) {
+  for (const { name, max } of numberProps) {
     if (clickInfo[name] !== undefined) {
       const num = parseInt(clickInfo[name], 10);
-      if (!isNaN(num) && num >= 0 && num < 1000) {
+      if (!isNaN(num) && num >= 0 && num < max) {
         sanitized[name] = num;
       }
     }
