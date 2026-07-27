@@ -2548,6 +2548,15 @@
           background-color: var(--vscode-editorGroupHeader-tabsBackground, #252526) !important;
         }
 
+        /* Mirror Kiro's focus ring. A snapshot is static HTML, so :focus never
+           applies to it - which is why the option you just picked in a choice or
+           approval prompt looked unselected here while the IDE outlined it.
+           snapshot.js marks the focused element and the ring is drawn from that. */
+        #chatContent [data-kr-focus="true"] {
+          outline: 2px solid var(--vscode-focusBorder, #007fd4) !important;
+          outline-offset: -1px !important;
+        }
+
         /* Render designated non-clickable options as plain text */
         #chatContent [data-kiro-plain-text="true"] {
           pointer-events: none !important;

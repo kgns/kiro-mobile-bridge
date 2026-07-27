@@ -180,6 +180,52 @@ export async function captureSnapshot(cdp) {
       }
     });
     
+    // Radios need the same treatment as checkboxes: the clone carries attributes
+    // but not the live checked property, so a selected option would arrive
+    // unselected and any :checked-driven selection styling would be lost.
+    const originalRadios = targetBody.querySelectorAll('input[type="radio"]');
+    const clonedRadios = clone.querySelectorAll('input[type="radio"]');
+    originalRadios.forEach((orig, i) => {
+      const cloned = clonedRadios[i];
+      if (!cloned) return;
+      if (orig.checked) {
+        cloned.setAttribute('checked', 'checked');
+      } else {
+        cloned.removeAttribute('checked');
+      }
+      cloned.setAttribute('aria-checked', orig.checked ? 'true' : 'false');
+    });
+    
+    // Mark the focused element. Pseudo-classes can't be serialized at all, so a
+    // focus ring is invisible in the snapshot - and that ring is how Kiro shows
+    // which option you just picked in a choice/approval prompt. The mobile client
+    // styles this attribute to draw the ring back in.
+    try {
+      const activeEl = targetDoc.activeElement;
+      if (activeEl && activeEl !== targetBody && targetBody.contains(activeEl)) {
+        // The clone is a deep copy of this body and nothing above has changed its
+        // shape, so walking both trees in step pairs each original with its copy.
+        const origWalker = targetDoc.createTreeWalker(targetBody, NodeFilter.SHOW_ELEMENT);
+        const cloneWalker = targetDoc.createTreeWalker(clone, NodeFilter.SHOW_ELEMENT);
+        let orig = origWalker.nextNode();
+        let copy = cloneWalker.nextNode();
+        while (orig && copy && orig !== activeEl) {
+          orig = origWalker.nextNode();
+          copy = cloneWalker.nextNode();
+        }
+        if (orig === activeEl && copy) {
+          copy.setAttribute('data-kr-focus', 'true');
+          try {
+            if (activeEl.matches(':focus-visible')) copy.setAttribute('data-kr-focus-visible', 'true');
+          } catch (e) {
+            // :focus-visible unsupported, the plain focus marker is enough
+          }
+        }
+      }
+    } catch (e) {
+      // Focus capture is best-effort
+    }
+    
     // Also sync role="switch" elements that might not be checkboxes
     const originalSwitches = targetBody.querySelectorAll('[role="switch"]');
     const clonedSwitches = clone.querySelectorAll('[role="switch"]');
