@@ -1435,7 +1435,10 @@
     function autoGrowComposer() {
       if (!composerInput) return;
       composerInput.style.height = 'auto';
-      composerInput.style.height = Math.min(composerInput.scrollHeight, 96) + 'px';
+      composerInput.style.height = Math.min(composerInput.scrollHeight, 160) + 'px';
+      // The controls sheet sits directly on top of the composer, so it has to
+      // follow the box as it grows or a multi-line draft slides underneath it.
+      if (controlsOpen) updateSheetOffset();
     }
 
     async function submitComposer() {
@@ -1459,15 +1462,11 @@
       }
     }
 
+    // Enter inserts a newline (the textarea's native behaviour); sending is the
+    // send button's job. A phone keyboard has no Shift+Enter, so binding Enter to
+    // send would leave no way to write a multi-line message.
     if (composerInput) {
       composerInput.addEventListener('input', autoGrowComposer);
-      composerInput.addEventListener('keydown', (e) => {
-        // Enter sends; Shift+Enter inserts a newline
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault();
-          submitComposer();
-        }
-      });
     }
     if (composerSendBtn) composerSendBtn.addEventListener('click', submitComposer);
 
@@ -3979,17 +3978,8 @@
           el.style.cursor = 'text';
           el.addEventListener('focus', () => { isTypingInKiroInput = true; });
           el.addEventListener('blur', () => { setTimeout(() => { isTypingInKiroInput = false; }, 200); });
-          el.addEventListener('keydown', async (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              const text = el.textContent || el.value || '';
-              if (text.trim()) {
-                await sendToKiro(text.trim());
-                el.textContent = ''; el.innerHTML = '';
-                isTypingInKiroInput = false;
-              }
-            }
-          });
+          // No Enter-to-send here either: these are snapshot copies of Kiro's own
+          // editors, and Enter must stay a newline everywhere on the phone.
         });
       });
 

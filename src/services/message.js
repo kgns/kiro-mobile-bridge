@@ -90,6 +90,38 @@ function createInjectScript(messageText) {
     const isProseMirror = editor.classList.contains('ProseMirror') || editor.classList.contains('tiptap');
     const isLexical = editor.hasAttribute('data-lexical-editor');
     
+    // Insert a soft line break at the caret. ProseMirror and Lexical both bind
+    // Shift+Enter to "insert line break" and listen for plain keydown events, so
+    // driving their own keybinding produces the break their document model expects.
+    const insertLineBreak = () => {
+      const before = editor.innerHTML;
+      editor.dispatchEvent(new KeyboardEvent('keydown', {
+        bubbles: true, cancelable: true,
+        key: 'Enter', code: 'Enter', keyCode: 13, which: 13, shiftKey: true
+      }));
+      if (editor.innerHTML !== before) return true;
+      try { if (targetDoc.execCommand('insertText', false, '\\n')) return true; } catch (e) {}
+      return editor.innerHTML !== before;
+    };
+    
+    // Insert text at the caret one line at a time. A single insertText carrying
+    // embedded newlines gets collapsed to spaces by both editors, so the breaks
+    // have to be issued separately. Returns false only when the editor rejects
+    // insertText outright, so the caller can fall back to a direct DOM write.
+    const insertRichText = (value) => {
+      const lines = String(value).split('\\n');
+      let accepted = false;
+      for (let i = 0; i < lines.length; i++) {
+        if (i > 0) insertLineBreak();
+        if (!lines[i]) continue;
+        let inserted = false;
+        try { inserted = !!targetDoc.execCommand('insertText', false, lines[i]); } catch (e) {}
+        if (inserted) accepted = true;
+        else if (!accepted) return false;
+      }
+      return true;
+    };
+    
     // Focus the editor first
     editor.focus();
     await new Promise(r => setTimeout(r, 50));
@@ -108,9 +140,7 @@ function createInjectScript(messageText) {
       selection.removeAllRanges();
       selection.addRange(range);
       // Insert text via execCommand to properly trigger state sync
-      let inserted = false;
-      try { inserted = !!targetDoc.execCommand('insertText', false, text); } catch(e) {}
-      if (!inserted) {
+      if (!insertRichText(text)) {
         const p = targetDoc.createElement('p');
         p.textContent = text;
         editor.appendChild(p);
@@ -126,9 +156,7 @@ function createInjectScript(messageText) {
       selection.addRange(range);
       
       // Insert new text using execCommand (Lexical intercepts this)
-      const inserted = targetDoc.execCommand('insertText', false, text);
-      
-      if (!inserted) {
+      if (!insertRichText(text)) {
         editor.textContent += text;
         editor.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
         editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
@@ -142,10 +170,7 @@ function createInjectScript(messageText) {
       selection.removeAllRanges();
       selection.addRange(range);
       
-      let inserted = false;
-      try { inserted = !!targetDoc.execCommand('insertText', false, text); } catch (e) {}
-      
-      if (!inserted) {
+      if (!insertRichText(text)) {
         editor.textContent += text;
         editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
       }
