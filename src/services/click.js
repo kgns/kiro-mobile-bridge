@@ -1460,6 +1460,7 @@ export async function clickElement(cdp, clickInfo) {
   if (clickInfo.isMessageActionButton) flags.push('MessageAction');
   if (clickInfo.parentMessageContext) flags.push('Context:' + clickInfo.parentMessageContext.substring(0, 20) + '...');
   if (typeof clickInfo.elementIndex === 'number') flags.push(`Index:${clickInfo.elementIndex}/${clickInfo.totalMatches || '?'}`);
+  flags.push(typeof clickInfo.refIndex === 'number' ? `Ref:${clickInfo.refIndex}` : 'NoRef');
 
   console.log(`[Click] Attempting: "${(clickInfo.text || clickInfo.ariaLabel || 'unknown').substring(0, 40)}" [${flags.join(', ') || 'generic'}]`);
 

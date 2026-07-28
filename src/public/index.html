@@ -3556,6 +3556,12 @@
           setTimeout(() => fetchChatSnapshot(selectedCascadeId), 550);
         };
         content.addEventListener('click', (e) => {
+          // Record the tapped element first, in the capture phase, before any
+          // per-element onclick can stop propagation. makeInteractive installs
+          // handlers on most clickable elements and each builds its own payload,
+          // so this is the only place guaranteed to see what was actually touched.
+          recordTap(e);
+
           const t = e.target;
           if (!t || !t.closest) return;
 
@@ -3772,25 +3778,8 @@
             className: typeof className === 'string' ? className.substring(0, 200) : ''
           };
 
-          // Positional reference stamped by the snapshot. This identifies the exact
-          // element that was tapped, so the server doesn't have to rediscover it
-          // from text - text is unstable (collapsing a block rewrites it) and the
-          // text search matched containers as readily as the target itself.
-          // The fingerprint lets the server reject a stale ref if Kiro's DOM moved
-          // on between the snapshot and the tap.
-          const refEl = clickableEl.closest('[data-kr]');
-          if (refEl) {
-            const refIndex = parseInt(refEl.getAttribute('data-kr'), 10);
-            if (!isNaN(refIndex)) {
-              clickInfo.refIndex = refIndex;
-              clickInfo.refTag = refEl.tagName.toLowerCase();
-              // getAttribute rather than className: on SVG elements className is an
-              // SVGAnimatedString, and icons are common click targets. data-kr is
-              // excluded so the fingerprint stays comparable to Kiro's own DOM.
-              clickInfo.refClass = (refEl.getAttribute('class') || '').substring(0, 200);
-              clickInfo.refText = (refEl.textContent || '').replace(/\s+/g, ' ').trim().substring(0, 60);
-            }
-          }
+          // The snapshot ref is attached centrally in sendClickToKiro, from the
+          // element recorded by the capture-phase tap listener.
 
           // Add specific flags based on element characteristics
           if (role === 'tab') clickInfo.isTab = true;
@@ -4926,8 +4915,46 @@
       }
     }
 
+    // The element under the finger for the most recent chat tap, recorded in the
+    // capture phase so it is seen no matter which handler ends up sending.
+    let lastTapEl = null;
+    let lastTapAt = 0;
+
+    function recordTap(e) {
+      lastTapEl = e.target;
+      lastTapAt = Date.now();
+    }
+
+    // Build the snapshot ref for an element, or null when it carries no ref (an
+    // element the mobile client added itself, or a portal copy the snapshot
+    // appended unstamped). The ref pins the exact element in Kiro's DOM; the
+    // fingerprint lets the server reject it if that DOM moved on since the
+    // snapshot, rather than clicking whatever now occupies the position.
+    function snapshotRefFor(el) {
+      const refEl = el && el.closest ? el.closest('[data-kr]') : null;
+      if (!refEl) return null;
+      const refIndex = parseInt(refEl.getAttribute('data-kr'), 10);
+      if (isNaN(refIndex)) return null;
+      return {
+        refIndex,
+        refTag: refEl.tagName.toLowerCase(),
+        // getAttribute rather than className: on SVG elements className is an
+        // SVGAnimatedString, and icons are common tap targets.
+        refClass: (refEl.getAttribute('class') || '').substring(0, 200),
+        refText: (refEl.textContent || '').replace(/\s+/g, ' ').trim().substring(0, 60)
+      };
+    }
+
     async function sendClickToKiro(clickInfo, retryCount = 0) {
       if (!selectedCascadeId) return;
+
+      // Attach the ref for the tapped element. Callers that target Kiro by an
+      // exact selector are left alone: the composer controls and the autopilot
+      // switch deliberately click an element other than the one under the finger.
+      if (clickInfo.refIndex === undefined && !clickInfo.controlSelector && Date.now() - lastTapAt < 2000) {
+        const ref = snapshotRefFor(lastTapEl);
+        if (ref) Object.assign(clickInfo, ref);
+      }
 
       const isNavigation = clickInfo.ariaLabel?.toLowerCase().includes('back') ||
         clickInfo.ariaLabel?.toLowerCase().includes('close') ||
