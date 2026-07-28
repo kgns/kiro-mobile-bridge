@@ -176,15 +176,30 @@ function createInjectScript(messageText) {
       }
     }
     
-    // Wait for editor state to sync
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    // Let the editor's framework state settle before looking for the submit button.
+    // This must not wait on animation frames: a renderer that isn't painting - a
+    // minimised or occluded window, which is the normal state when Kiro is being
+    // driven from a phone - never fires them, so the script parked here until the
+    // CDP call timed out. The bridge then reported a failed send for a message that
+    // went through as soon as the window painted again.
     await new Promise(r => setTimeout(r, 100));
     
     // Find and click submit button
-    const submitButton = targetDoc.querySelector('button[data-variant="submit"]:not([disabled])') ||
-                         targetDoc.querySelector('svg.lucide-arrow-right')?.closest('button:not([disabled])') ||
-                         targetDoc.querySelector('button[type="submit"]:not([disabled])') ||
-                         targetDoc.querySelector('button[aria-label*="send" i]:not([disabled])');
+    const findSubmitButton = () =>
+      targetDoc.querySelector('button[data-variant="submit"]:not([disabled])') ||
+      targetDoc.querySelector('svg.lucide-arrow-right')?.closest('button:not([disabled])') ||
+      targetDoc.querySelector('button[type="submit"]:not([disabled])') ||
+      targetDoc.querySelector('button[aria-label*="send" i]:not([disabled])');
+    
+    // The button stays disabled until the editor reports content, so allow one
+    // more wait. Timers in a throttled renderer are clamped to roughly a second
+    // each, so keep the number of sequential waits low to stay inside the CDP
+    // call budget.
+    let submitButton = findSubmitButton();
+    if (!submitButton) {
+      await new Promise(r => setTimeout(r, 250));
+      submitButton = findSubmitButton();
+    }
     
     if (submitButton) {
       submitButton.click();
