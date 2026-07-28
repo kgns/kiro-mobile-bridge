@@ -2548,6 +2548,37 @@
           background-color: var(--vscode-editorGroupHeader-tabsBackground, #252526) !important;
         }
 
+        /* Dropdowns inside the conversation - the Pattern and Apply to selects in
+           an "Always allow" prompt, and any other .select-menu - are portaled to
+           the end of the body and positioned by floating-ui with pixel coordinates
+           computed against the IDE's window. Those land far outside a phone
+           viewport (around x=1200 on a 390px screen), so the options were present
+           in the snapshot but impossible to see or reach. Drop the computed
+           position and let the menu render in flow: the portal is the body's last
+           child, which puts it directly below the prompt it belongs to. */
+        #chatContent .select-menu {
+          position: static !important;
+          transform: none !important;
+          left: auto !important;
+          top: auto !important;
+          right: auto !important;
+          bottom: auto !important;
+          width: auto !important;
+          min-width: 0 !important;
+          max-width: none !important;
+          max-height: none !important;
+          overflow: visible !important;
+          margin: 6px 0 !important;
+        }
+
+        /* Give the options a touch-sized row; Kiro's own padding leaves them ~31px. */
+        #chatContent .select-option {
+          display: flex !important;
+          align-items: center !important;
+          min-height: 44px !important;
+          padding: 10px 12px !important;
+        }
+
         /* Mirror Kiro's focus ring. A snapshot is static HTML, so :focus never
            applies to it - which is why the option you just picked in a choice or
            approval prompt looked unselected here while the IDE outlined it.
