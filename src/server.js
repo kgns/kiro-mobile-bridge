@@ -19,7 +19,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
 // Services
-import { fetchCDPTargets, connectToCDP } from './services/cdp.js';
+import { fetchCDPTargets, connectToCDP, isKiroChatWebview } from './services/cdp.js';
 import { captureMetadata, captureCSS, captureSnapshot, captureEditor } from './services/snapshot.js';
 
 // Utils
@@ -31,7 +31,8 @@ import {
   DISCOVERY_INTERVAL_STABLE,
   SNAPSHOT_INTERVAL_ACTIVE,
   SNAPSHOT_INTERVAL_IDLE,
-  SNAPSHOT_IDLE_THRESHOLD
+  SNAPSHOT_IDLE_THRESHOLD,
+  WEBVIEW_PROBE_TTL_MS
 } from './utils/constants.js';
 
 // Auth
@@ -106,6 +107,11 @@ const pollingState = {
 // Discovery Service
 // =============================================================================
 
+// Webviews that turned out not to host Kiro's chat, so discovery doesn't
+// reconnect and re-probe them on every cycle.
+// cascadeId -> { at: number }
+const rejectedWebviews = new Map();
+
 let _discoveryRunning = false;
 async function discoverTargets() {
   if (_discoveryRunning) return;
@@ -175,6 +181,7 @@ async function discoverTargets() {
       });
 
       for (const target of kiroAgentTargets) {
+        const url = (target.url || '').toLowerCase();
         const wsUrl = target.webSocketDebuggerUrl;
         const cascadeId = generateId(wsUrl);
         foundCascadeIds.add(cascadeId);
@@ -183,10 +190,27 @@ async function discoverTargets() {
           : '';
 
         if (!cascades.has(cascadeId)) {
-          stateChanged = true;
+          const rejected = rejectedWebviews.get(cascadeId);
+          if (rejected && Date.now() - rejected.at < WEBVIEW_PROBE_TTL_MS) continue;
 
           try {
             const cdp = await connectToCDP(wsUrl);
+
+            // Every VS Code webview shares the vscode-webview URL scheme, so the
+            // candidate list above also catches extension panels - Git Graph, a
+            // markdown preview, anything of that shape. They hang off the same
+            // window and inherit its title, which made them show up as a second,
+            // identically named Kiro window in the picker. Confirm the webview
+            // really hosts the chat before exposing it.
+            const isChat = url.includes('kiroagent') || await isKiroChatWebview(cdp);
+            if (!isChat) {
+              rejectedWebviews.set(cascadeId, { at: Date.now() });
+              console.log(`[Discovery] Ignoring webview without a Kiro chat: ${target.title || '(untitled)'}`);
+              try { cdp.close(); } catch (e) { /* already closed */ }
+              continue;
+            }
+            rejectedWebviews.delete(cascadeId);
+            stateChanged = true;
 
             cascades.set(cascadeId, {
               id: cascadeId,
@@ -250,6 +274,12 @@ async function discoverTargets() {
       cascades.delete(cascadeId);
       broadcastCascadeList();
     }
+  }
+
+  // Forget rejected webviews that have gone away, so the map can't grow unbounded
+  // over a long session of opening and closing panels.
+  for (const cascadeId of rejectedWebviews.keys()) {
+    if (!foundCascadeIds.has(cascadeId)) rejectedWebviews.delete(cascadeId);
   }
 
   const mainWindowChanged = foundMainWindow !== pollingState.lastMainWindowConnected;

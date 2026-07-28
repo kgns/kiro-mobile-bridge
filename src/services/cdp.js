@@ -66,6 +66,52 @@ function fetchFromHost(host, port, path) {
  */
 
 /**
+ * Markers that only Kiro's chat webview has. Every VS Code webview shares the
+ * vscode-webview URL scheme, so the URL alone cannot tell the chat apart from an
+ * extension panel such as Git Graph or a markdown preview.
+ * @type {string}
+ */
+const CHAT_MARKER_SELECTOR = [
+  '.session-view-root',
+  '.session-manager-root',
+  '.session-view-content',
+  '.session-view-input',
+  '.chat-input-wrapper',
+  '.chat-input-bottom-row',
+  '.kiro-agent-selector-trigger'
+].join(', ');
+
+/**
+ * Check whether a connected webview target actually hosts Kiro's chat.
+ * Looks inside the nested #active-frame document, which is where VS Code renders
+ * webview content.
+ * @param {CDPConnection} cdp - CDP connection to the webview target
+ * @returns {Promise<boolean>} - true when the chat UI is present
+ */
+export async function isKiroChatWebview(cdp) {
+  if (!cdp.rootContextId) return false;
+
+  const script = `(function() {
+    let doc = document;
+    const activeFrame = document.getElementById('active-frame');
+    if (activeFrame && activeFrame.contentDocument) doc = activeFrame.contentDocument;
+    if (!doc || !doc.querySelector) return false;
+    return !!doc.querySelector('${CHAT_MARKER_SELECTOR}');
+  })()`;
+
+  try {
+    const result = await cdp.call('Runtime.evaluate', {
+      expression: script,
+      contextId: cdp.rootContextId,
+      returnByValue: true
+    });
+    return result.result?.value === true;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
  * Create a CDP connection to a target
  * @param {string} wsUrl - WebSocket debugger URL
  * @returns {Promise<CDPConnection>} - CDP connection object

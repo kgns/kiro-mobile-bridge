@@ -97,6 +97,14 @@ export const DISCOVERY_INTERVAL_ACTIVE = 10000;  // 10 seconds when changes dete
 export const DISCOVERY_INTERVAL_STABLE = 30000;  // 30 seconds when stable
 
 /**
+ * How long a webview that turned out not to host Kiro's chat is remembered, so
+ * discovery doesn't reconnect and re-probe it on every cycle. Short enough that a
+ * chat webview which simply hadn't rendered yet is picked up again shortly after.
+ * @type {number}
+ */
+export const WEBVIEW_PROBE_TTL_MS = 30000;
+
+/**
  * Snapshot polling intervals
  */
 export const SNAPSHOT_INTERVAL_ACTIVE = 200;     // 200ms when active (very fast updates)
