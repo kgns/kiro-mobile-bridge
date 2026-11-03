@@ -962,6 +962,61 @@
       background: #4caf50;
     }
 
+    .manual-copy-sheet {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: flex-end;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 1001;
+    }
+
+    .manual-copy-sheet.visible {
+      display: flex;
+    }
+
+    .manual-copy-panel {
+      width: 100%;
+      max-width: 640px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+      background: #1e1e1e;
+      color: #ccc;
+      border-radius: 12px 12px 0 0;
+    }
+
+    .manual-copy-title {
+      font-size: 13px;
+    }
+
+    .manual-copy-text {
+      width: 100%;
+      min-height: 120px;
+      max-height: 50vh;
+      padding: 10px;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 16px;
+      color: #ddd;
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 6px;
+      resize: vertical;
+      -webkit-user-select: text;
+      user-select: text;
+    }
+
+    .manual-copy-close {
+      min-height: 44px;
+      font-size: 15px;
+      color: #fff;
+      background: #0e639c;
+      border: 0;
+      border-radius: 6px;
+    }
+
     /* =============================================================================
        Empty State
        ============================================================================= */
@@ -1206,6 +1261,121 @@
       toast.textContent = message;
       toast.className = 'toast visible' + (isSuccess ? ' success' : '');
       setTimeout(() => toast.classList.remove('visible'), duration);
+    }
+
+    // =============================================================================
+    // Copy to the phone's clipboard
+    // =============================================================================
+    // Copy buttons in the snapshot belong to Kiro: forwarding the tap would copy
+    // into the desktop clipboard, not the phone's. The bridge is also served over
+    // plain HTTP on the LAN, which is not a secure context, so navigator.clipboard
+    // is undefined on the phone. A selected textarea plus execCommand('copy')
+    // still works there, as long as it runs synchronously inside the tap handler.
+
+    /**
+     * Copy text to the phone's clipboard.
+     * Must be called synchronously from a user gesture (click/tap) handler.
+     * @param {string} text
+     * @returns {boolean} true if the browser reported a successful copy
+     */
+    function copyTextToPhone(text) {
+      if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(() => showManualCopySheet(text));
+        return true;
+      }
+      const previousFocus = document.activeElement;
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      // readonly keeps the on-screen keyboard closed; 16px stops iOS from zooming.
+      ta.setAttribute('readonly', '');
+      ta.setAttribute('aria-hidden', 'true');
+      ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;font-size:16px;';
+      document.body.appendChild(ta);
+      let ok = false;
+      try {
+        ta.focus({ preventScroll: true });
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        ok = document.execCommand('copy');
+      } catch (e) {
+        ok = false;
+      }
+      ta.remove();
+      if (previousFocus && previousFocus !== document.body && previousFocus.focus) {
+        try { previousFocus.focus({ preventScroll: true }); } catch (e) { }
+      }
+      return ok;
+    }
+
+    /**
+     * Fallback when the browser refuses to copy: show the text pre-selected so
+     * it can be copied with the native long-press menu.
+     * @param {string} text
+     */
+    function showManualCopySheet(text) {
+      let sheet = document.getElementById('manualCopySheet');
+      if (!sheet) {
+        sheet = document.createElement('div');
+        sheet.id = 'manualCopySheet';
+        sheet.className = 'manual-copy-sheet';
+        sheet.setAttribute('role', 'dialog');
+        sheet.setAttribute('aria-modal', 'true');
+        sheet.setAttribute('aria-label', 'Copy text');
+        sheet.innerHTML =
+          '<div class="manual-copy-panel">' +
+          '<div class="manual-copy-title">Long-press the text to copy it</div>' +
+          '<textarea class="manual-copy-text" readonly></textarea>' +
+          '<button type="button" class="manual-copy-close">Done</button>' +
+          '</div>';
+        sheet.addEventListener('click', (e) => {
+          if (e.target === sheet || e.target.closest('.manual-copy-close')) sheet.classList.remove('visible');
+        });
+        document.body.appendChild(sheet);
+      }
+      const area = sheet.querySelector('.manual-copy-text');
+      area.value = text;
+      sheet.classList.add('visible');
+      area.focus({ preventScroll: true });
+      area.setSelectionRange(0, text.length);
+    }
+
+    /**
+     * Read the source text of a Kiro (streamdown) code block from the snapshot.
+     * Each line is its own block-level span and line numbers come from CSS
+     * counters, so lines are joined explicitly; empty lines render as "\n".
+     * @param {Element} block - the [data-streamdown="code-block"] element
+     * @returns {string}
+     */
+    function getCodeBlockText(block) {
+      const code = block.querySelector('[data-streamdown="code-block-body"] code') || block.querySelector('pre code');
+      if (code && code.children.length) {
+        return Array.from(code.children)
+          .map(line => (line.textContent === '\n' ? '' : line.textContent))
+          .join('\n');
+      }
+      const pre = block.querySelector('pre');
+      return (code || pre || block).textContent || '';
+    }
+
+    /**
+     * Copy a tapped Kiro code block to the phone and report the outcome.
+     * @param {Element} copyBtn - the tapped code-block copy button
+     * @returns {boolean} true if the tap was handled
+     */
+    function handleCodeBlockCopy(copyBtn) {
+      const block = copyBtn.closest('[data-streamdown="code-block"]');
+      if (!block) return false;
+      const text = getCodeBlockText(block);
+      if (!text) {
+        showToast('Nothing to copy');
+        return true;
+      }
+      if (copyTextToPhone(text)) {
+        showToast('Copied to clipboard', 1500, true);
+      } else {
+        showManualCopySheet(text);
+      }
+      return true;
     }
 
     // =============================================================================
@@ -3595,6 +3765,15 @@
 
           const t = e.target;
           if (!t || !t.closest) return;
+
+          // Copy on the phone instead of forwarding to Kiro (which would copy to
+          // the desktop clipboard). Runs synchronously so the browser still
+          // treats the copy as part of the tap.
+          const copyBtn = t.closest('[data-streamdown="code-block-copy-button"]');
+          if (copyBtn && handleCodeBlockCopy(copyBtn)) {
+            e.preventDefault(); e.stopPropagation();
+            return;
+          }
 
           const opt = t.closest('.chat-input-popup-option');
           if (opt) {
